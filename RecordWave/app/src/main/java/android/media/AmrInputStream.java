@@ -5,10 +5,10 @@ import java.io.InputStream;
 
 /**
  * AmrInputStream
- *
+ * 通过Android系统自带的AmrInputStream类，因为它被隐藏了，只有通过反射来操作
  */
 public final class AmrInputStream extends InputStream {
-    
+
     /*static {
         System.loadLibrary("media_jni");
     }*/

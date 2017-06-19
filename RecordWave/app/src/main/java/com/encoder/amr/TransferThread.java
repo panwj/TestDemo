@@ -10,9 +10,11 @@ public class TransferThread extends Thread{
 	
 	private TransferCallback callback;
 	private Context context;
-	public TransferThread(Context context, TransferCallback callback){
+	private String path;
+	public TransferThread(Context context, String path, TransferCallback callback){
 		this.callback = callback;
 		this.context = context;
+		this.path = path;
 	}
 	
 	@Override
@@ -24,10 +26,11 @@ public class TransferThread extends Thread{
 		String rootPath = Environment.getExternalStorageDirectory().getPath();
         String amrPath = rootPath + "/test.amr";
         try {
-            InputStream pcmStream = context.getAssets().open("test.pcm");
-            AmrEncoder.pcm2Amr(pcmStream, amrPath);
+//            InputStream pcmStream = context.getAssets().open("test.pcm");
+//            AmrEncoder.pcm2Amr(pcmStream, amrPath);
+			AmrEncoder.pcm2Amr(path, path.replace(".pcm", ".amr"));
             callback.onSuccess();
-        } catch (IOException e) {
+        } catch (Exception e) {
         	callback.onFailed();
             e.printStackTrace();
         }

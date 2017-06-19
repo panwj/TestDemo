@@ -1,28 +1,50 @@
 package com;
 
+import android.content.Context;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
+import android.media.MediaRecorder;
 import android.os.Build;
 import android.util.Log;
+
+import com.czt.mp3recorder.PCMFormat;
 
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 
+import utils.SharedPreferencesUtil;
+
 /**
  * Created by panwenjuan on 17-6-2.
  */
 public class AudioTrackManager {
+    //=======================AudioRecord Default Settings=======================
+    private static final int DEFAULT_AUDIO_SOURCE = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+    /**
+     * 以下三项为默认配置参数。Google Android文档明确表明只有以下3个参数是可以在所有设备上保证支持的。
+     */
+    private static final int DEFAULT_SAMPLING_RATE = 44100;//模拟器仅支持从麦克风输入8kHz采样率
+    private static final int DEFAULT_CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
+    /**
+     * 下面是对此的封装
+     * private static final int DEFAULT_AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+     */
+    private static final PCMFormat DEFAULT_AUDIO_FORMAT = PCMFormat.PCM_16BIT;
+
     private AudioTrack audioTrack;
     private DataInputStream dis;
     private Thread recordThread;
     private boolean isStart = false;
     private static AudioTrackManager mInstance;
     private int bufferSize;
+    private static final String TAG = "AudioTrackManager";
+    private Context mContext;
 
-    public AudioTrackManager() {
+    public AudioTrackManager(Context context) {
+        mContext = context;
 //        bufferSize = AudioTrack.getMinBufferSize(41000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
 //        audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, 41000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize * 2, AudioTrack.MODE_STREAM);
     }
@@ -32,11 +54,11 @@ public class AudioTrackManager {
      *
      * @return
      */
-    public static AudioTrackManager getInstance() {
+    public static AudioTrackManager getInstance(Context context) {
         if (mInstance == null) {
             synchronized (AudioTrackManager.class) {
                 if (mInstance == null) {
-                    mInstance = new AudioTrackManager();
+                    mInstance = new AudioTrackManager(context);
                 }
             }
         }
@@ -47,7 +69,7 @@ public class AudioTrackManager {
      * 销毁线程方法
      */
     private void destroyThread() {
-        Log.d("zzz", "destroyThread()");
+        Log.d(TAG, "destroyThread()");
         try {
             isStart = false;
             if (null != recordThread && Thread.State.RUNNABLE == recordThread.getState()) {
@@ -70,7 +92,7 @@ public class AudioTrackManager {
      * 启动播放线程
      */
     private void startThread() {
-        Log.d("zzz", "startThread()");
+        Log.d(TAG, "startThread()");
         destroyThread();
         isStart = true;
         if (recordThread == null) {
@@ -86,10 +108,18 @@ public class AudioTrackManager {
         @Override
         public void run() {
             try {
-                Log.d("zzz", "real run start");
+                Log.d(TAG, "real run start");
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
-                bufferSize = AudioTrack.getMinBufferSize(41000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-                audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, 41000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize * 2, AudioTrack.MODE_STREAM);
+                int test_source = (int) SharedPreferencesUtil.get(mContext, "source", DEFAULT_AUDIO_SOURCE);
+                Log.d(TAG, "source = " + test_source);
+                int test_sampling_rate = (int) SharedPreferencesUtil.get(mContext, "hz", DEFAULT_SAMPLING_RATE);
+                int test_channel_congif = (int) SharedPreferencesUtil.get(mContext, "channel", DEFAULT_CHANNEL_CONFIG);
+                int test_bit = (int) SharedPreferencesUtil.get(mContext, "encoding", DEFAULT_AUDIO_FORMAT.getAudioFormat());
+                Log.d(TAG, "test_source = " + test_source + "  test_sampling_rate = " + test_sampling_rate
+                        + "  test_channel_congif = " + test_channel_congif + "  test_bit = " + test_bit);
+
+                bufferSize = AudioTrack.getMinBufferSize(test_sampling_rate, test_channel_congif, test_bit);
+                audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, test_sampling_rate, test_channel_congif, test_bit, bufferSize * 2, AudioTrack.MODE_STREAM);
                 byte[] tempBuffer = new byte[bufferSize];
                 int readCount = 0;
                 if (Build.VERSION.SDK_INT >= 21) {
@@ -102,13 +132,18 @@ public class AudioTrackManager {
                     }
                     if (readCount != 0 && readCount != -1) {
                         audioTrack.play();
-                        Log.d("zzz", "write()");
                         audioTrack.write(tempBuffer, 0, readCount);
+                        if (mAudioTrackCallback != null) {
+                            mAudioTrackCallback.onStart();
+                        }
                     }
                 }
                 stopPlay();
             } catch (Exception e) {
                 e.printStackTrace();
+                if (mAudioTrackCallback != null) {
+                    mAudioTrackCallback.onFailed();
+                }
             }
         }
 
@@ -144,7 +179,7 @@ public class AudioTrackManager {
      * 停止播放
      */
     public void stopPlay() {
-        Log.d("zzz", "stopPlay()");
+        Log.d(TAG, "stopPlay()");
         try {
             destroyThread();
             if (audioTrack != null) {
@@ -162,6 +197,22 @@ public class AudioTrackManager {
             }
         } catch (Exception e) {
             e.printStackTrace();
+        } finally {
+            if (mAudioTrackCallback != null) {
+                mAudioTrackCallback.onStop();
+            }
         }
+    }
+
+    private AudioTrackCallback mAudioTrackCallback;
+    public void setAudioTrackCallback(AudioTrackCallback callback) {
+        mAudioTrackCallback = callback;
+    }
+    public interface AudioTrackCallback{
+
+        void onStart();
+        void onStop();
+
+        void onFailed();
     }
 }

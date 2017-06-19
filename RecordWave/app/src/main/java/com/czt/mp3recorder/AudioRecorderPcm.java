@@ -6,6 +6,7 @@ import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.os.Handler;
 import android.util.Log;
+import android.widget.Toast;
 
 import com.encoder.amr.AmrEncoder;
 
@@ -41,25 +42,6 @@ public class AudioRecorderPcm {
      * private static final int DEFAULT_AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
      */
     private static final PCMFormat DEFAULT_AUDIO_FORMAT = PCMFormat.PCM_16BIT;
-
-    //======================Lame Default Settings=====================
-    private static final int DEFAULT_LAME_MP3_QUALITY = 7;
-    /**
-     * 与DEFAULT_CHANNEL_CONFIG相关，因为是mono单声，所以是1
-     */
-    private static final int DEFAULT_LAME_IN_CHANNEL = 1;
-    /**
-     * Encoded bit rate. MP3 file will be encoded with bit rate 32kbps
-     */
-    private static final int DEFAULT_LAME_MP3_BIT_RATE = 32;
-
-    //==================================================================
-
-    /**
-     * 自定义 每160帧作为一个周期，通知一下需要进行编码
-     */
-    private static final int FRAME_COUNT = 160;
-    public static final int ERROR_TYPE = 22;
 
     private static final String TAG = "AudioRecorderPcm";
 
@@ -160,15 +142,21 @@ public class AudioRecorderPcm {
      * Initialize audio recorder
      */
     private void initAudioRecorder() throws IOException {
-        mBufferSize = AudioRecord.getMinBufferSize(DEFAULT_SAMPLING_RATE,
-                DEFAULT_CHANNEL_CONFIG, DEFAULT_AUDIO_FORMAT.getAudioFormat());
+
+        int test_source = (int) SharedPreferencesUtil.get(mContext, "source", DEFAULT_AUDIO_SOURCE);
+        int test_sampling_rate = (int) SharedPreferencesUtil.get(mContext, "hz", DEFAULT_SAMPLING_RATE);
+        int test_channel_congif = (int) SharedPreferencesUtil.get(mContext, "channel", DEFAULT_CHANNEL_CONFIG);
+        int test_bit = (int) SharedPreferencesUtil.get(mContext, "encoding", DEFAULT_AUDIO_FORMAT.getAudioFormat());
+Log.d(TAG, "test_source = " + test_source + "  test_sampling_rate = " + test_sampling_rate
+        + "  test_channel_congif = " + test_channel_congif + "  test_bit = " + test_bit);
+
+        mBufferSize = AudioRecord.getMinBufferSize(test_sampling_rate,
+                test_channel_congif, test_bit);
 
 		/* Setup audio recorder */
-        int test_source = (int) SharedPreferencesUtil.get(mContext, "source", DEFAULT_AUDIO_SOURCE);
-        Log.d(TAG, "source = " + test_source);
+
         mAudioRecord = new AudioRecord(test_source,
-                DEFAULT_SAMPLING_RATE, DEFAULT_CHANNEL_CONFIG, DEFAULT_AUDIO_FORMAT.getAudioFormat(),
-                mBufferSize);
+                test_sampling_rate, test_channel_congif, test_bit, mBufferSize);
     }
 
 
@@ -258,7 +246,7 @@ public class AudioRecorderPcm {
             //encording .wav
 //            convertAudioFiles(path, path.replace(".pcm", ".wav"));
             //encording .amr  8000 hz ---> ok
-            AmrEncoder.pcm2Amr(path, path.replace(".pcm", ".amr"));
+//            AmrEncoder.pcm2Amr(path, path.replace(".pcm", ".amr"));
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -362,7 +350,8 @@ public class AudioRecorderPcm {
     }
 
 
-    private void convertAudioFiles(String src, String target) {
+    public void convertAudioFiles(String src, String target) {
+        Toast.makeText(mContext, "to .wav start", Toast.LENGTH_SHORT).show();
         Log.d(TAG, "convertAudioFiles()  enter");
         FileInputStream fis = null;
         FileOutputStream fos = null;
@@ -407,8 +396,10 @@ public class AudioRecorderPcm {
                 fos.write(buf, 0, size);
                 size = fis.read(buf);
             }
+            Toast.makeText(mContext, "to .wav success", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             e.printStackTrace();
+            Toast.makeText(mContext, "to .wav failed", Toast.LENGTH_SHORT).show();
             Log.d(TAG, "------------- " + e.toString());
         } finally {
             try {

@@ -77,6 +77,10 @@ public class RecordManager {
         return mFilePath;
     }
 
+    public AudioRecorderPcm getAudioRecorderPcm() {
+        return mAudioRecorderPcm;
+    }
+
     /**
      * audio start
      */

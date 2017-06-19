@@ -200,8 +200,17 @@ public class MP3AudioRecorder extends BaseRecorder {
      * Initialize audio recorder
      */
     private void initAudioRecorder() throws IOException {
-        mBufferSize = AudioRecord.getMinBufferSize(DEFAULT_SAMPLING_RATE,
-                DEFAULT_CHANNEL_CONFIG, DEFAULT_AUDIO_FORMAT.getAudioFormat());
+        /* Setup audio recorder */
+        int test_source = (int) SharedPreferencesUtil.get(mContext, "source", DEFAULT_AUDIO_SOURCE);
+        Log.d(TAG, "source = " + test_source);
+        int test_sampling_rate = (int) SharedPreferencesUtil.get(mContext, "hz", DEFAULT_SAMPLING_RATE);
+        int test_channel_congif = (int) SharedPreferencesUtil.get(mContext, "channel", DEFAULT_CHANNEL_CONFIG);
+        int test_bit = (int) SharedPreferencesUtil.get(mContext, "encoding", DEFAULT_AUDIO_FORMAT.getAudioFormat());
+        Log.d(TAG, "test_source = " + test_source + "  test_sampling_rate = " + test_sampling_rate
+                + "  test_channel_congif = " + test_channel_congif + "  test_bit = " + test_bit);
+
+        mBufferSize = AudioRecord.getMinBufferSize(test_sampling_rate,
+                test_channel_congif, test_bit);
 
         int bytesPerFrame = DEFAULT_AUDIO_FORMAT.getBytesPerFrame();
         /* Get number of samples. Calculate the buffer size
@@ -214,12 +223,8 @@ public class MP3AudioRecorder extends BaseRecorder {
             mBufferSize = frameSize * bytesPerFrame;
         }
 
-		/* Setup audio recorder */
-        int test_source = (int) SharedPreferencesUtil.get(mContext, "source", DEFAULT_AUDIO_SOURCE);
-        Log.d(TAG, "source = " + test_source);
         mAudioRecord = new AudioRecord(test_source,
-                DEFAULT_SAMPLING_RATE, DEFAULT_CHANNEL_CONFIG, DEFAULT_AUDIO_FORMAT.getAudioFormat(),
-                mBufferSize);
+                test_sampling_rate, test_channel_congif, test_bit, mBufferSize);
 
         mPCMBuffer = new short[mBufferSize];
         /*

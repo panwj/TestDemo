@@ -5,12 +5,18 @@ import android.media.AudioFormat;
 import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Message;
 import android.support.v7.app.AppCompatActivity;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
 import android.widget.TextView;
+import android.widget.Toast;
 
+import com.czt.mp3recorder.RecordManager;
 import com.encoder.amr.AmrEncoder;
+import com.encoder.amr.TransferThread;
 import com.view.test.R;
 
 import java.io.IOException;
@@ -26,27 +32,7 @@ import service.RecordService;
  */
 public class MainActivity extends AppCompatActivity implements View.OnClickListener{
 
-
-   /* @BindView(R.id.main_frameLayout)
-    FrameLayout mainFrameLayout;
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-        ButterKnife.bind(this);
-
-        MainFragment newFragment = new MainFragment();
-        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
-        transaction.replace(R.id.main_frameLayout, newFragment);
-        transaction.addToBackStack(null);
-        transaction.commit();
-
-        Intent intent = new Intent();
-        intent.setClass(this, RecordService.class);
-        startService(intent);
-    }*/
-
+    private static final String TAG = "MainActivity";
     private TextView source_1, source_2, source_3, source_4, source_5, source_6, source_7;
     private TextView encorder_1, encorder_2, encorder_3, encorder_4;
     private TextView format_1, format_2, format_3, format_4, format_5, format_6;
@@ -54,175 +40,27 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private TextView encording_1, encording_2, encording_3, encording_4,encording_5, encording_6, encording_7, encording_8, encording_9;
     private TextView channel_1, channel_2, channel_3, channel_4, channel_5, channel_6, channel_7, channel_8, channel_9;
     private TextView record_mode_0, record_mode_1, record_mode_2;
+    private TextView start, stop, playMedia, playTrack, filetv;
+    private boolean isPlaying = false;
+    private boolean isRecording = false;
+    private String filePath;
+    private String transferPath;
+    private RecordManager recordManager;
+    private AudioPlayer audioPlayer;
+    private AudioTrackManager audioTrackManager;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.setting_layout);
-        int source1 = MediaRecorder.AudioSource.DEFAULT;
-        int source2 = MediaRecorder.AudioSource.MIC;
-        int source3 = MediaRecorder.AudioSource.VOICE_CALL;
-        int source4 = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
-        int source5 = MediaRecorder.AudioSource.VOICE_DOWNLINK;
-        int source6 = MediaRecorder.AudioSource.VOICE_RECOGNITION;
-        int source7 = MediaRecorder.AudioSource.VOICE_UPLINK;
+        init();
 
-        int encoder1 = MediaRecorder.AudioEncoder.AAC;
-        int encoder2 = MediaRecorder.AudioEncoder.AMR_NB;
-        int encoder3 = MediaRecorder.AudioEncoder.AMR_WB;
-        int encoder4 = MediaRecorder.AudioEncoder.DEFAULT;
-
-        int format1 = MediaRecorder.OutputFormat.AAC_ADTS;//.aac
-        int format2 = MediaRecorder.OutputFormat.AMR_NB;//.amr
-        int format3 = MediaRecorder.OutputFormat.AMR_WB;//.amr
-        int format4 = MediaRecorder.OutputFormat.MPEG_4;//.mp4
-        int format5 = MediaRecorder.OutputFormat.THREE_GPP;//.3gp
-        int format6 = MediaRecorder.OutputFormat.DEFAULT;//.amr
-
-        // audio -------------------
-        int encoding1 = AudioFormat.ENCODING_DEFAULT;
-        int encoding2 = AudioFormat.ENCODING_PCM_8BIT;
-        int encoding3 = AudioFormat.ENCODING_PCM_16BIT;
-//        int encoding4 = AudioFormat.ENCODING_PCM_FLOAT;
-//        int encoding5 = AudioFormat.ENCODING_DTS;
-//        int encoding6 = AudioFormat.ENCODING_DTS_HD;
-        int encoding7 = AudioFormat.ENCODING_INVALID;
-//        int encoding8 = AudioFormat.ENCODING_AC3;
-//        int encoding9 = AudioFormat.ENCODING_E_AC3;
-
-        int channel1 = AudioFormat.CHANNEL_IN_MONO;
-        int channel2 = AudioFormat.CHANNEL_IN_STEREO;
-        int channel3 = AudioFormat.CHANNEL_IN_DEFAULT;
-        int channel4 = AudioFormat.CHANNEL_INVALID;
-        int channel5 = AudioFormat.CHANNEL_IN_FRONT;
-        int channel6 = AudioFormat.CHANNEL_IN_BACK;
-        int channel7 = AudioFormat.CHANNEL_IN_PRESSURE;
-        int channel8 = AudioFormat.CHANNEL_IN_VOICE_DNLINK;
-        int channel9 = AudioFormat.CHANNEL_IN_VOICE_UPLINK;
-
-        source_1 = (TextView) findViewById(R.id.source_1);
-        source_2 = (TextView) findViewById(R.id.source_2);
-        source_3 = (TextView) findViewById(R.id.source_3);
-        source_4 = (TextView) findViewById(R.id.source_4);
-        source_5 = (TextView) findViewById(R.id.source_5);
-        source_6 = (TextView) findViewById(R.id.source_6);
-        source_7 = (TextView) findViewById(R.id.source_7);
-        source_1.setOnClickListener(this);
-        source_2.setOnClickListener(this);
-        source_3.setOnClickListener(this);
-        source_4.setOnClickListener(this);
-        source_5.setOnClickListener(this);
-        source_6.setOnClickListener(this);
-        source_7.setOnClickListener(this);
-
-        encorder_1 = (TextView) findViewById(R.id.encode_1);
-        encorder_2 = (TextView) findViewById(R.id.encode_2);
-        encorder_3 = (TextView) findViewById(R.id.encode_3);
-        encorder_4 = (TextView) findViewById(R.id.encode_4);
-        encorder_1.setOnClickListener(this);
-        encorder_2.setOnClickListener(this);
-        encorder_3.setOnClickListener(this);
-        encorder_4.setOnClickListener(this);
-
-        format_1 = (TextView) findViewById(R.id.format_1);
-        format_2 = (TextView) findViewById(R.id.format_2);
-        format_3 = (TextView) findViewById(R.id.format_3);
-        format_4 = (TextView) findViewById(R.id.format_4);
-        format_5 = (TextView) findViewById(R.id.format_5);
-        format_6 = (TextView) findViewById(R.id.format_6);
-        format_1.setOnClickListener(this);
-        format_2.setOnClickListener(this);
-        format_3.setOnClickListener(this);
-        format_4.setOnClickListener(this);
-        format_5.setOnClickListener(this);
-        format_6.setOnClickListener(this);
-
-        hz_0 = (TextView) findViewById(R.id.hz_0);
-        hz_1 = (TextView) findViewById(R.id.hz_1);
-        hz_2 = (TextView) findViewById(R.id.hz_2);
-        hz_3 = (TextView) findViewById(R.id.hz_3);
-        hz_4 = (TextView) findViewById(R.id.hz_4);
-        hz_5 = (TextView) findViewById(R.id.hz_5);
-        hz_6 = (TextView) findViewById(R.id.hz_6);
-        hz_0.setOnClickListener(this);
-        hz_1.setOnClickListener(this);
-        hz_2.setOnClickListener(this);
-        hz_3.setOnClickListener(this);
-        hz_4.setOnClickListener(this);
-        hz_5.setOnClickListener(this);
-        hz_6.setOnClickListener(this);
-
-        encording_1 = (TextView) findViewById(R.id.encoding_1);
-        encording_2 = (TextView) findViewById(R.id.encoding_2);
-        encording_3 = (TextView) findViewById(R.id.encoding_3);
-        encording_4 = (TextView) findViewById(R.id.encoding_4);
-        encording_5 = (TextView) findViewById(R.id.encoding_5);
-        encording_6 = (TextView) findViewById(R.id.encoding_6);
-        encording_7 = (TextView) findViewById(R.id.encoding_7);
-        encording_8 = (TextView) findViewById(R.id.encoding_8);
-        encording_9 = (TextView) findViewById(R.id.encoding_9);
-        encording_1.setOnClickListener(this);
-        encording_2.setOnClickListener(this);
-        encording_3.setOnClickListener(this);
-//        encording_4.setOnClickListener(this);
-//        encording_5.setOnClickListener(this);
-//        encording_6.setOnClickListener(this);
-        encording_7.setOnClickListener(this);
-//        encording_8.setOnClickListener(this);
-//        encording_9.setOnClickListener(this);
-
-        channel_1 = (TextView) findViewById(R.id.channel_1);
-        channel_2 = (TextView) findViewById(R.id.channel_2);
-        channel_3 = (TextView) findViewById(R.id.channel_3);
-        channel_4 = (TextView) findViewById(R.id.channel_4);
-        channel_5 = (TextView) findViewById(R.id.channel_5);
-        channel_6 = (TextView) findViewById(R.id.channel_6);
-        channel_7 = (TextView) findViewById(R.id.channel_7);
-        channel_8 = (TextView) findViewById(R.id.channel_8);
-        channel_9 = (TextView) findViewById(R.id.channel_9);
-        channel_1.setOnClickListener(this);
-        channel_2.setOnClickListener(this);
-        channel_3.setOnClickListener(this);
-        channel_4.setOnClickListener(this);
-        channel_5.setOnClickListener(this);
-        channel_6.setOnClickListener(this);
-        channel_7.setOnClickListener(this);
-        channel_8.setOnClickListener(this);
-        channel_9.setOnClickListener(this);
-
-        record_mode_0 = (TextView) findViewById(R.id.record_mode_0);
-        record_mode_1 = (TextView) findViewById(R.id.record_mode_1);
-        record_mode_2 = (TextView) findViewById(R.id.record_mode_2);
-        record_mode_0.setOnClickListener(this);
-        record_mode_1.setOnClickListener(this);
-        record_mode_2.setOnClickListener(this);
-        showSourceUI((int) SharedPreferencesUtil.get(this, "source", -1));
-        showEncorderUI((int) SharedPreferencesUtil.get(this, "encode", -1));
-        showFormatUI((int) SharedPreferencesUtil.get(this, "format", -1));
-        showEncordingUI((int) SharedPreferencesUtil.get(this, "encoding", -1));
-        showChannelUI((int) SharedPreferencesUtil.get(this, "channel", -1));
-        showHzUI((int) SharedPreferencesUtil.get(this, "hz", -1));
-        int mode = (int) SharedPreferencesUtil.get(this, "record_mode", -1);
-        if (mode == 0) {
-            record_mode_0.setTextColor(getResources().getColor(R.color.red));
-            record_mode_1.setTextColor(getResources().getColor(R.color.black));
-            record_mode_2.setTextColor(getResources().getColor(R.color.black));
-        } else if (mode == 1) {
-            record_mode_0.setTextColor(getResources().getColor(R.color.black));
-            record_mode_1.setTextColor(getResources().getColor(R.color.red));
-            record_mode_2.setTextColor(getResources().getColor(R.color.black));
-        } else if (mode == 2) {
-            record_mode_0.setTextColor(getResources().getColor(R.color.black));
-            record_mode_1.setTextColor(getResources().getColor(R.color.black));
-            record_mode_2.setTextColor(getResources().getColor(R.color.red));
-        } else {
-            record_mode_0.setTextColor(getResources().getColor(R.color.black));
-            record_mode_1.setTextColor(getResources().getColor(R.color.black));
-            record_mode_2.setTextColor(getResources().getColor(R.color.black));
-        }
-
-        Intent intent = new Intent();
+        //start service
+        /* Intent intent = new Intent();
         intent.setClass(this, RecordService.class);
-        startService(intent);
+        startService(intent);*/
+
+
+        //test
 //        String path = "/storage/emulated/0/appRecorderTest/63f541af-cb92-49c9-81ee-2f37c93c95eb.pcm";
 //        AmrEncoder.pcm2Amr(path, path.replace(".pcm", ".amr"));
 
@@ -249,6 +87,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        resolveResetPlay();
     }
 
     @Override
@@ -440,7 +279,217 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 record_mode_1.setTextColor(getResources().getColor(R.color.black));
                 record_mode_2.setTextColor(getResources().getColor(R.color.red));
                 break;
+            case R.id.record_start:
+                startRecord();
+                break;
+            case R.id.record_stop:
+                stopRecord();
+                break;
+            case R.id.play_media:
+                playByMedia();
+                break;
+            case R.id.play_audiotrack:
+                playByTrack();
+                break;
+            case R.id.toamr:
+                if (!TextUtils.isEmpty(filePath)
+                        && filePath.endsWith(".pcm")) {
+                    startTransferToAmr();
+                } else {
+                    Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show();
+                }
+
+                break;
+            case R.id.towav:
+                if (!TextUtils.isEmpty(filePath)
+                        && filePath.endsWith(".pcm")
+                        && recordManager.getAudioRecorderPcm() != null) {
+                    startTransferToWav();
+                } else {
+                    Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show();
+                }
+                break;
         }
+    }
+
+    private void startRecord() {
+        resolveResetPlay();
+        if (recordManager == null) {
+            recordManager = RecordManager.getInstance(getApplicationContext());
+        }
+        if (!isRecording) {
+            isRecording = true;
+            recordManager.startRecord();
+        }
+    }
+
+    private void stopRecord() {
+        if (!isRecording) {
+            Toast.makeText(getApplicationContext(), "当前没有录音", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (recordManager == null) {
+            recordManager = RecordManager.getInstance(getApplicationContext());
+        }
+        isRecording = false;
+        recordManager.stopRecord();
+        filePath = recordManager.getFilePath();
+        filetv.setText("录音 : " + filePath);
+    }
+
+    /**
+     *  play audio file by MediaPlayer
+     */
+    private void playByMedia() {
+        Log.d(TAG, "playByMedia()  filePath = " + filePath);
+        if (canPlay()) {
+            int record_mode = (int) SharedPreferencesUtil.get(getApplicationContext(), "record_mode", 0);
+            if (record_mode == 1 || record_mode == 0) {
+                transferPath = filePath;
+            }
+            if (transferPath.endsWith(".pcm")) {
+                Toast.makeText(getApplicationContext(), "当前播放方式不支持.pcm", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            isPlaying = true;
+            if (audioPlayer == null) {
+                audioPlayer = new AudioPlayer(this, new Handler() {
+                    @Override
+                    public void handleMessage(Message msg) {
+                        super.handleMessage(msg);
+                        switch (msg.what) {
+                            case AudioPlayer.HANDLER_CUR_TIME://更新的时间
+
+                                break;
+                            case AudioPlayer.HANDLER_COMPLETE://播放结束
+                                isPlaying = false;
+                                break;
+                            case AudioPlayer.HANDLER_PREPARED://播放开始
+                                break;
+                            case AudioPlayer.HANDLER_ERROR://播放错误
+                                resolveResetPlay();
+                                break;
+                        }
+
+                    }
+                });
+            }
+            audioPlayer.playUrl(transferPath);
+        }
+    }
+
+    /**
+     * play audio file by AudioTrack, only play .wav file
+     */
+    private void playByTrack() {
+        Log.d(TAG, "playByTrack()  filePath = " + filePath);
+        if (canPlay()) {
+            if (!filePath.endsWith(".pcm")) {
+                Toast.makeText(getApplicationContext(), "当前播放方式仅支持.pcm", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            isPlaying = true;
+            if (audioTrackManager == null) {
+                audioTrackManager = AudioTrackManager.getInstance(getApplicationContext());
+            }
+            audioTrackManager.setAudioTrackCallback(new AudioTrackManager.AudioTrackCallback() {
+                @Override
+                public void onStart() {
+                    Log.d(TAG, "MainActivity onStart() ---> audioTrack");
+                }
+
+                @Override
+                public void onStop() {
+                    Log.d(TAG, "MainActivity onStop() ---> audioTrack");
+                    isPlaying = false;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            Toast.makeText(MainActivity.this, "track play completed", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
+
+                @Override
+                public void onFailed() {
+                    Log.d(TAG, "MainActivity onStop() ---> audioTrack");
+                    isPlaying = false;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            Toast.makeText(MainActivity.this, "track play failed", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
+            });
+            audioTrackManager.startPlay(filePath);
+        }
+    }
+
+    private boolean canPlay() {
+        if (isRecording) {
+            Toast.makeText(getApplicationContext(), "sorry, 当前正在录音", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if (isPlaying) {
+            Toast.makeText(getApplicationContext(), "sorry, 当前正在播放", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if (TextUtils.isEmpty(filePath) || filePath == "") {
+            Toast.makeText(getApplicationContext(), "文件不存在", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        return true;
+    }
+
+    private void resolveResetPlay() {
+        if (isPlaying && audioPlayer != null) {
+            audioPlayer.pause();
+        }
+        if (isPlaying && audioTrackManager != null) {
+            audioTrackManager.stopPlay();
+            audioTrackManager.setAudioTrackCallback(null);
+        }
+        filePath = "";
+        transferPath = "";
+        isPlaying = false;
+    }
+
+    /**
+     * Conversion format to .amr, SAMPLING_RATE ---> 8000hz
+     */
+    private void startTransferToAmr() {
+        transferPath = filePath.replace(".pcm", ".amr");
+        new TransferThread(this, filePath, new TransferThread.TransferCallback() {
+
+            @Override
+            public void onSuccess() {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(getApplicationContext(), "to .amr success", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+
+            @Override
+            public void onFailed() {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(getApplicationContext(), "to .amr failed", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /**
+     * Conversion format to .wav
+     */
+    private void startTransferToWav() {
+        transferPath = filePath.replace(".pcm", ".wav");
+        recordManager.getAudioRecorderPcm().convertAudioFiles(filePath, transferPath);
     }
 
     private void setData(String key, int value) {
@@ -839,5 +888,137 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 break;
         }
 
+    }
+
+    private void init() {
+
+        source_1 = (TextView) findViewById(R.id.source_1);
+        source_2 = (TextView) findViewById(R.id.source_2);
+        source_3 = (TextView) findViewById(R.id.source_3);
+        source_4 = (TextView) findViewById(R.id.source_4);
+        source_5 = (TextView) findViewById(R.id.source_5);
+        source_6 = (TextView) findViewById(R.id.source_6);
+        source_7 = (TextView) findViewById(R.id.source_7);
+        source_1.setOnClickListener(this);
+        source_2.setOnClickListener(this);
+        source_3.setOnClickListener(this);
+        source_4.setOnClickListener(this);
+        source_5.setOnClickListener(this);
+        source_6.setOnClickListener(this);
+        source_7.setOnClickListener(this);
+
+        encorder_1 = (TextView) findViewById(R.id.encode_1);
+        encorder_2 = (TextView) findViewById(R.id.encode_2);
+        encorder_3 = (TextView) findViewById(R.id.encode_3);
+        encorder_4 = (TextView) findViewById(R.id.encode_4);
+        encorder_1.setOnClickListener(this);
+        encorder_2.setOnClickListener(this);
+        encorder_3.setOnClickListener(this);
+        encorder_4.setOnClickListener(this);
+
+        format_1 = (TextView) findViewById(R.id.format_1);
+        format_2 = (TextView) findViewById(R.id.format_2);
+        format_3 = (TextView) findViewById(R.id.format_3);
+        format_4 = (TextView) findViewById(R.id.format_4);
+        format_5 = (TextView) findViewById(R.id.format_5);
+        format_6 = (TextView) findViewById(R.id.format_6);
+        format_1.setOnClickListener(this);
+        format_2.setOnClickListener(this);
+        format_3.setOnClickListener(this);
+        format_4.setOnClickListener(this);
+        format_5.setOnClickListener(this);
+        format_6.setOnClickListener(this);
+
+        hz_0 = (TextView) findViewById(R.id.hz_0);
+        hz_1 = (TextView) findViewById(R.id.hz_1);
+        hz_2 = (TextView) findViewById(R.id.hz_2);
+        hz_3 = (TextView) findViewById(R.id.hz_3);
+        hz_4 = (TextView) findViewById(R.id.hz_4);
+        hz_5 = (TextView) findViewById(R.id.hz_5);
+        hz_6 = (TextView) findViewById(R.id.hz_6);
+        hz_0.setOnClickListener(this);
+        hz_1.setOnClickListener(this);
+        hz_2.setOnClickListener(this);
+        hz_3.setOnClickListener(this);
+        hz_4.setOnClickListener(this);
+        hz_5.setOnClickListener(this);
+        hz_6.setOnClickListener(this);
+
+        encording_1 = (TextView) findViewById(R.id.encoding_1);
+        encording_2 = (TextView) findViewById(R.id.encoding_2);
+        encording_3 = (TextView) findViewById(R.id.encoding_3);
+        encording_4 = (TextView) findViewById(R.id.encoding_4);
+        encording_5 = (TextView) findViewById(R.id.encoding_5);
+        encording_6 = (TextView) findViewById(R.id.encoding_6);
+        encording_7 = (TextView) findViewById(R.id.encoding_7);
+        encording_8 = (TextView) findViewById(R.id.encoding_8);
+        encording_9 = (TextView) findViewById(R.id.encoding_9);
+        encording_1.setOnClickListener(this);
+        encording_2.setOnClickListener(this);
+        encording_3.setOnClickListener(this);
+        encording_7.setOnClickListener(this);
+
+        channel_1 = (TextView) findViewById(R.id.channel_1);
+        channel_2 = (TextView) findViewById(R.id.channel_2);
+        channel_3 = (TextView) findViewById(R.id.channel_3);
+        channel_4 = (TextView) findViewById(R.id.channel_4);
+        channel_5 = (TextView) findViewById(R.id.channel_5);
+        channel_6 = (TextView) findViewById(R.id.channel_6);
+        channel_7 = (TextView) findViewById(R.id.channel_7);
+        channel_8 = (TextView) findViewById(R.id.channel_8);
+        channel_9 = (TextView) findViewById(R.id.channel_9);
+        channel_1.setOnClickListener(this);
+        channel_2.setOnClickListener(this);
+        channel_3.setOnClickListener(this);
+        channel_4.setOnClickListener(this);
+        channel_5.setOnClickListener(this);
+        channel_6.setOnClickListener(this);
+        channel_7.setOnClickListener(this);
+        channel_8.setOnClickListener(this);
+        channel_9.setOnClickListener(this);
+
+        record_mode_0 = (TextView) findViewById(R.id.record_mode_0);
+        record_mode_1 = (TextView) findViewById(R.id.record_mode_1);
+        record_mode_2 = (TextView) findViewById(R.id.record_mode_2);
+        record_mode_0.setOnClickListener(this);
+        record_mode_1.setOnClickListener(this);
+        record_mode_2.setOnClickListener(this);
+        showSourceUI((int) SharedPreferencesUtil.get(this, "source", -1));
+        showEncorderUI((int) SharedPreferencesUtil.get(this, "encode", -1));
+        showFormatUI((int) SharedPreferencesUtil.get(this, "format", -1));
+        showEncordingUI((int) SharedPreferencesUtil.get(this, "encoding", -1));
+        showChannelUI((int) SharedPreferencesUtil.get(this, "channel", -1));
+        showHzUI((int) SharedPreferencesUtil.get(this, "hz", -1));
+        int mode = (int) SharedPreferencesUtil.get(this, "record_mode", -1);
+        if (mode == 0) {
+            record_mode_0.setTextColor(getResources().getColor(R.color.red));
+            record_mode_1.setTextColor(getResources().getColor(R.color.black));
+            record_mode_2.setTextColor(getResources().getColor(R.color.black));
+        } else if (mode == 1) {
+            record_mode_0.setTextColor(getResources().getColor(R.color.black));
+            record_mode_1.setTextColor(getResources().getColor(R.color.red));
+            record_mode_2.setTextColor(getResources().getColor(R.color.black));
+        } else if (mode == 2) {
+            record_mode_0.setTextColor(getResources().getColor(R.color.black));
+            record_mode_1.setTextColor(getResources().getColor(R.color.black));
+            record_mode_2.setTextColor(getResources().getColor(R.color.red));
+        } else {
+            record_mode_0.setTextColor(getResources().getColor(R.color.black));
+            record_mode_1.setTextColor(getResources().getColor(R.color.black));
+            record_mode_2.setTextColor(getResources().getColor(R.color.black));
+        }
+
+        start = (TextView) findViewById(R.id.record_start);
+        stop = (TextView) findViewById(R.id.record_stop);
+        playMedia = (TextView) findViewById(R.id.play_media);
+        playTrack = (TextView) findViewById(R.id.play_audiotrack);
+        start.setOnClickListener(this);
+        stop.setOnClickListener(this);
+        playMedia.setOnClickListener(this);
+        playTrack.setOnClickListener(this);
+
+        filetv = (TextView) findViewById(R.id.filepath);
+        findViewById(R.id.toamr).setOnClickListener(this);
+        findViewById(R.id.towav).setOnClickListener(this);
     }
 }

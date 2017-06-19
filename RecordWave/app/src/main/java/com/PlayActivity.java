@@ -101,7 +101,7 @@ public class PlayActivity extends Activity implements View.OnClickListener{
                     Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                AudioTrackManager.getInstance().startPlay(filePath);
+                AudioTrackManager.getInstance(getApplicationContext()).startPlay(filePath);
 //                new AudioTrackManager().startPlay("/storage/emulated/0/appRecorderTest/59a1a5eb-8655-4f75-a01d-3ffc7ef64dce.pcm");
                 break;
         }

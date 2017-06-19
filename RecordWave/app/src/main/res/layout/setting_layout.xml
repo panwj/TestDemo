@@ -536,7 +536,7 @@
             android:layout_height="wrap_content"
             android:layout_marginLeft="16dp"
             android:layout_marginTop="10dp"
-            android:text="Audio Record"/>
+            android:text="Audio Record ---> .mp3"/>
 
         <TextView
             android:id="@+id/record_mode_2"
@@ -544,25 +544,83 @@
             android:layout_height="wrap_content"
             android:layout_marginLeft="16dp"
             android:layout_marginTop="10dp"
-            android:text="Audio Record pcm"/>
+            android:text="Audio Record ---> .pcm"/>
 
         <TextView
+            android:id="@+id/filepath"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="设置完成(点击显示所有设置)"
+            android:text="录音"
             android:textSize="16sp"
             android:textColor="@color/green"
             android:layout_marginTop="10dp"
             android:layout_marginLeft="16dp"/>
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+            <TextView
+                android:id="@+id/record_start"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/colorPrimary"
+                android:layout_marginLeft="10dp"
+                android:layout_marginRight="10dp"
+                android:text="start"/>
+
+            <TextView
+                android:id="@+id/record_stop"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/colorPrimary"
+                android:layout_marginLeft="10dp"
+                android:layout_marginRight="10dp"
+                android:text="stop"/>
+
+            <TextView
+                android:id="@+id/play_media"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/colorPrimary"
+                android:layout_marginLeft="10dp"
+                android:layout_marginRight="10dp"
+                android:text="play by media"/>
+
+            <TextView
+                android:id="@+id/play_audiotrack"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/colorPrimary"
+                android:layout_marginLeft="10dp"
+                android:layout_marginRight="10dp"
+                android:text="play by audioTrack"/>
+        </LinearLayout>
+
         <TextView
-            android:id="@+id/setting"
+            android:id="@+id/toamr"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textColor="@color/colorPrimary"
             android:layout_marginTop="10dp"
             android:layout_marginLeft="16dp"
-            android:layout_marginRight="16dp"/>
+            android:layout_marginRight="10dp"
+            android:text="pcm 转换成 amr(目前8000hz有效)"/>
+
+        <TextView
+            android:id="@+id/towav"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:layout_marginLeft="16dp"
+            android:layout_marginRight="10dp"
+            android:text="pcm 转换成 wav"/>
+
     </LinearLayout>
 
 </ScrollView>
