@@ -5,25 +5,14 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Message;
 import android.support.annotation.Nullable;
 import android.telephony.PhoneStateListener;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import android.widget.Toast;
 
-import com.czt.mp3recorder.MP3MediaRecorder;
-import com.czt.mp3recorder.MP3AudioRecorder;
-import com.czt.mp3recorder.MP3RecordManager;
-import com.shuyu.app.PlayActivity;
-import com.shuyu.waveview.FileUtils;
-import com.shuyu.waveview.SharedPreferencesUtil;
-
-import java.io.File;
-import java.io.IOException;
-import java.util.UUID;
+import com.czt.mp3recorder.RecordManager;
+import com.PlayActivity;
 
 /**
  * Created by panwenjuan on 17-4-25.
@@ -32,7 +21,7 @@ public class RecordService extends Service {
     private static final String TAG = "RecordService";
     private TelephonyManager mTelephonyManager = null;
     private OutgoingCallPhone mOutgoingCallPhone = null;
-    private MP3RecordManager mp3RecordManager;
+    private RecordManager recordManager;
 
     @Nullable
     @Override
@@ -57,7 +46,7 @@ public class RecordService extends Service {
     @Override
     public void onDestroy() {
         mTelephonyManager = null;
-        mp3RecordManager = null;
+        recordManager = null;
         unregisterOutgoingBroadcastReceiver();
         super.onDestroy();
     }
@@ -76,14 +65,14 @@ public class RecordService extends Service {
             switch (state){
                 case TelephonyManager.CALL_STATE_IDLE:
                     Log.d(TAG, "CALL_STATE_IDLE");
-                    if (mp3RecordManager != null) {
-                        mp3RecordManager.stopRecord();
+                    if (recordManager != null) {
+                        recordManager.stopRecord();
                         Intent intent = new Intent();
                         intent.setClass(RecordService.this, PlayActivity.class);
-                        intent.putExtra("file_path", mp3RecordManager.getFilePath());
+                        intent.putExtra("file_path", recordManager.getFilePath());
                         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
                         startActivity(intent);
-                        mp3RecordManager = null;
+                        recordManager = null;
                     }
                     break;
                 case TelephonyManager.CALL_STATE_RINGING:
@@ -92,9 +81,9 @@ public class RecordService extends Service {
                 case TelephonyManager.CALL_STATE_OFFHOOK:
                     Log.d(TAG, "CALL_STATE_OFFHOOK");
 
-                    mp3RecordManager = MP3RecordManager.getInstance(RecordService.this);
-                    if (mp3RecordManager != null) {
-                        mp3RecordManager.startRecord();
+                    recordManager = RecordManager.getInstance(RecordService.this);
+                    if (recordManager != null) {
+                        recordManager.startRecord();
                     }
                     break;
             }

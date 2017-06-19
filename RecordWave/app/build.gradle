@@ -1,17 +1,25 @@
 apply plugin: 'com.android.application'
-apply plugin: 'com.neenbedankt.android-apt'
+//apply plugin: 'com.neenbedankt.android-apt'
 
 android {
 
-    def globalConfiguration = rootProject.extensions.getByName("ext")
-    compileSdkVersion globalConfiguration.androidCompileSdkVersion
-    buildToolsVersion globalConfiguration.androidBuildToolsVersion
+//    def globalConfiguration = rootProject.extensions.getByName("ext")
+//    compileSdkVersion globalConfiguration.androidCompileSdkVersion
+//    buildToolsVersion globalConfiguration.androidBuildToolsVersion
+
+    compileSdkVersion 23
+    buildToolsVersion "23.0.1"
+
+    useLibrary 'org.apache.http.legacy'
 
     defaultConfig {
         applicationId "com.shuyu.app"
 
-        minSdkVersion globalConfiguration.androidMinSdkVersion
-        targetSdkVersion globalConfiguration.androidTargetSdkVersion
+//        minSdkVersion globalConfiguration.androidMinSdkVersion
+//        targetSdkVersion globalConfiguration.androidTargetSdkVersion
+
+        minSdkVersion 17
+        targetSdkVersion 20
 
         versionCode 1
         versionName "1.0"
@@ -23,12 +31,22 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['libs']
+        }
+    }
 }
 
 dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
-    def viewDependencies = rootProject.ext.viewDependencies
-    apt viewDependencies.apt_butterKnife
-    compile viewDependencies.butterKnife
-    compile project(':waveview')
+    compile 'com.android.support:appcompat-v7:23.1.1'
+    compile 'com.android.support:design:23.1.1'
+    compile 'com.android.support:support-v4:23.1.1'
+//    def viewDependencies = rootProject.ext.viewDependencies
+//    apt viewDependencies.apt_butterKnife
+//    compile viewDependencies.butterKnife
+//    compile project(':waveview')
+//    compile viewDependencies.videocache
 }

@@ -6,7 +6,7 @@
     android:layout_height="match_parent"
     android:background="@color/primary_material_dark">
 
-    <com.shuyu.waveview.AudioWaveView
+    <com.view.waveview.AudioWaveView
         android:id="@+id/audioWave"
         android:layout_width="match_parent"
         android:layout_height="120dp"

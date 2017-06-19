@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.shuyu.app">
+    package="com.view.test">
 
     <!-- 请求访问网络 -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -23,7 +23,7 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity
-            android:name=".MainActivity"
+            android:name="com.MainActivity"
             android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -33,10 +33,10 @@
         </activity>
 
         <activity
-            android:name=".WavePlayActivity"
+            android:name="com.view.test.WavePlayActivity"
             android:screenOrientation="portrait" />
 
-        <activity android:name=".PlayActivity"/>
+        <activity android:name="com.PlayActivity"/>
 
         <service android:name="service.RecordService"/>
 
