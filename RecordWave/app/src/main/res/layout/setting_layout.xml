@@ -7,6 +7,7 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:layout_marginBottom="20dp"
         android:orientation="vertical">
 
         <TextView
@@ -610,7 +611,7 @@
             android:layout_marginTop="10dp"
             android:layout_marginLeft="16dp"
             android:layout_marginRight="10dp"
-            android:text="pcm 转换成 amr(目前8000hz有效)"/>
+            android:text="pcm 转换成 .amr(目前8000hz有效)"/>
 
         <TextView
             android:id="@+id/towav"
@@ -619,7 +620,16 @@
             android:layout_marginTop="10dp"
             android:layout_marginLeft="16dp"
             android:layout_marginRight="10dp"
-            android:text="pcm 转换成 wav"/>
+            android:text="pcm 转换成 .wav"/>
+
+        <TextView
+            android:id="@+id/tom4a"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:layout_marginLeft="16dp"
+            android:layout_marginRight="10dp"
+            android:text="pcm 转换成 .m4a (api>=18)"/>
 
     </LinearLayout>
 

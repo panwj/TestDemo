@@ -43,6 +43,12 @@ public class AudioRecorderPcm {
      */
     private static final PCMFormat DEFAULT_AUDIO_FORMAT = PCMFormat.PCM_16BIT;
 
+    /**
+     * 自定义 每160帧作为一个周期，通知一下需要进行编码
+     */
+    private static final int FRAME_COUNT = 160;
+    public static final int ERROR_TYPE = 22;
+
     private static final String TAG = "AudioRecorderPcm";
 
     private Context mContext;
@@ -82,9 +88,14 @@ public class AudioRecorderPcm {
         if (mIsRecording) {
             return;
         }
+
         mIsRecording = true; // 提早，防止init或startRecording被多次调用
         initAudioRecorder();
         try {
+            if (mAudioRecord == null) {
+                Toast.makeText(mContext, "audio recording error", Toast.LENGTH_SHORT).show();
+                return;
+            }
             mAudioRecord.startRecording();
         } catch (Exception ex) {
             ex.printStackTrace();
@@ -147,16 +158,30 @@ public class AudioRecorderPcm {
         int test_sampling_rate = (int) SharedPreferencesUtil.get(mContext, "hz", DEFAULT_SAMPLING_RATE);
         int test_channel_congif = (int) SharedPreferencesUtil.get(mContext, "channel", DEFAULT_CHANNEL_CONFIG);
         int test_bit = (int) SharedPreferencesUtil.get(mContext, "encoding", DEFAULT_AUDIO_FORMAT.getAudioFormat());
-Log.d(TAG, "test_source = " + test_source + "  test_sampling_rate = " + test_sampling_rate
-        + "  test_channel_congif = " + test_channel_congif + "  test_bit = " + test_bit);
+        Log.d(TAG, "test_source = " + test_source + "  test_sampling_rate = " + test_sampling_rate
+                + "  test_channel_congif = " + test_channel_congif + "  test_bit = " + test_bit);
+        try {
+            test_channel_congif = 1;
+            mBufferSize = AudioRecord.getMinBufferSize(test_sampling_rate,
+                    test_channel_congif, test_bit);
 
-        mBufferSize = AudioRecord.getMinBufferSize(test_sampling_rate,
-                test_channel_congif, test_bit);
+            int bytesPerFrame = DEFAULT_AUDIO_FORMAT.getBytesPerFrame();
+        /* Get number of samples. Calculate the buffer size
+         * (round up to the factor of given frame size)
+		 * 使能被整除，方便下面的周期性通知
+		 * */
+            int frameSize = mBufferSize / bytesPerFrame;
+            if (frameSize % FRAME_COUNT != 0) {
+                frameSize += (FRAME_COUNT - frameSize % FRAME_COUNT);
+                mBufferSize = frameSize * bytesPerFrame;
+            }
 
 		/* Setup audio recorder */
-
-        mAudioRecord = new AudioRecord(test_source,
-                test_sampling_rate, test_channel_congif, test_bit, mBufferSize);
+            mAudioRecord = new AudioRecord(test_source,
+                    test_sampling_rate, test_channel_congif, test_bit, mBufferSize);
+        } catch (Exception e) {
+            Log.d(TAG, "initAudioRecorder e = " + e.toString());
+        }
     }
 
 

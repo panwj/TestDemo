@@ -17,6 +17,7 @@ import android.widget.Toast;
 import com.czt.mp3recorder.RecordManager;
 import com.encoder.amr.AmrEncoder;
 import com.encoder.amr.TransferThread;
+import com.encoder.m4a.M4aEncoder;
 import com.view.test.R;
 
 import java.io.IOException;
@@ -309,6 +310,14 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                     Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show();
                 }
                 break;
+            case R.id.tom4a:
+                if (!TextUtils.isEmpty(filePath)
+                        && filePath.endsWith(".pcm")) {
+                    startTransferToM4a();
+                } else {
+                    Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show();
+                }
+                break;
         }
     }
 
@@ -490,6 +499,14 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private void startTransferToWav() {
         transferPath = filePath.replace(".pcm", ".wav");
         recordManager.getAudioRecorderPcm().convertAudioFiles(filePath, transferPath);
+    }
+
+    private void startTransferToM4a() {
+        Log.d(TAG, "startTransferToM4a() enter");
+        transferPath = filePath.replace(".pcm", ".m4a");
+        M4aEncoder m4aEncoder = M4aEncoder.getInstance(getApplicationContext());
+        m4aEncoder.encodeToM4a(filePath, transferPath);
+        Log.d(TAG, "startTransferToM4a() exit");
     }
 
     private void setData(String key, int value) {
@@ -1020,5 +1037,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         filetv = (TextView) findViewById(R.id.filepath);
         findViewById(R.id.toamr).setOnClickListener(this);
         findViewById(R.id.towav).setOnClickListener(this);
+        findViewById(R.id.tom4a).setOnClickListener(this);
     }
 }
