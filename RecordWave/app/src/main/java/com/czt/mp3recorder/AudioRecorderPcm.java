@@ -161,7 +161,6 @@ public class AudioRecorderPcm {
         Log.d(TAG, "test_source = " + test_source + "  test_sampling_rate = " + test_sampling_rate
                 + "  test_channel_congif = " + test_channel_congif + "  test_bit = " + test_bit);
         try {
-            test_channel_congif = 1;
             mBufferSize = AudioRecord.getMinBufferSize(test_sampling_rate,
                     test_channel_congif, test_bit);
 
