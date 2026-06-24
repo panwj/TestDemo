@@ -19,8 +19,13 @@ import com.example.similarscandemo.util.FormatUtils
  */
 class ProductCategoryAdapter(
     private val activity: Activity,
-    private val categories: List<ProductCategory>
+    private var categories: List<ProductCategory>
 ) : BaseAdapter() {
+    fun submitList(newCategories: List<ProductCategory>) {
+        categories = newCategories
+        notifyDataSetChanged()
+    }
+
     override fun getCount(): Int = categories.size
     override fun getItem(position: Int): ProductCategory = categories[position]
     override fun getItemId(position: Int): Long = position.toLong()

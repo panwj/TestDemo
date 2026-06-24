@@ -26,6 +26,8 @@ import com.example.similarscandemo.scanner.SimilarMediaScanner
 import com.example.similarscandemo.service.MediaScanService
 import com.example.similarscandemo.ui.ProductCategoryAdapter
 import com.example.similarscandemo.util.DeleteOperationStore
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 竞品同构首页：权限申请、扫描进度和纵向媒体分类。
@@ -37,7 +39,11 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var summaryText: TextView
     private lateinit var categoryList: ListView
+    private var categoryAdapter: ProductCategoryAdapter? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val renderExecutor = Executors.newSingleThreadExecutor()
+    private val renderGeneration = AtomicInteger(0)
+    private val throttledRender = Runnable { loadAndRenderCachedGroups(updateCachedSummary = false) }
     private var receiverRegistered = false
     private var observerRegistered = false
     private var isScanning = false
@@ -64,7 +70,7 @@ class MainActivity : Activity() {
                     isScanning = true
                     statusText.text = message
                     summaryText.text = "Scanning $processed media · $groups groups"
-                    render(scanner.loadCachedGroups())
+                    scheduleThrottledRender()
                 }
                 MediaScanService.ACTION_COMPLETE -> finishScanUi(
                     "Reviewed $processed changed media files",
@@ -224,6 +230,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         mainHandler.removeCallbacks(mediaChangedScan)
+        mainHandler.removeCallbacks(throttledRender)
         if (receiverRegistered) {
             unregisterReceiver(scanReceiver)
             receiverRegistered = false
@@ -235,6 +242,12 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        renderGeneration.incrementAndGet()
+        renderExecutor.shutdownNow()
+        super.onDestroy()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(STATE_PENDING_SCAN, pendingScanAfterPermission)
         outState.putBoolean(STATE_NOTIFICATION_IN_FLIGHT, notificationRequestInFlight)
@@ -243,16 +256,39 @@ class MainActivity : Activity() {
     }
 
     private fun showCachedResults() {
-        val groups = scanner.loadCachedGroups()
-        render(groups)
-        if (groups.isNotEmpty()) {
-            summaryText.text = "Cached results are ready while a new scan can update them"
-        }
+        loadAndRenderCachedGroups(updateCachedSummary = true)
         statusText.text = permissionStatusMessage()
     }
 
-    private fun render(groups: List<com.example.similarscandemo.model.SimilarGroup>) {
-        categoryList.adapter = ProductCategoryAdapter(this, ProductCategoryBuilder.build(groups))
+    private fun scheduleThrottledRender() {
+        mainHandler.removeCallbacks(throttledRender)
+        mainHandler.postDelayed(throttledRender, RESULT_RENDER_THROTTLE_MS)
+    }
+
+    private fun loadAndRenderCachedGroups(updateCachedSummary: Boolean) {
+        val generation = renderGeneration.incrementAndGet()
+        renderExecutor.execute {
+            if (generation != renderGeneration.get()) return@execute
+            val groups = scanner.loadCachedGroups()
+            val categories = ProductCategoryBuilder.build(groups)
+            mainHandler.post {
+                if (generation != renderGeneration.get()) return@post
+                render(categories)
+                if (updateCachedSummary && groups.isNotEmpty() && !isScanning) {
+                    summaryText.text = "Cached results are ready while a new scan can update them"
+                }
+            }
+        }
+    }
+
+    private fun render(categories: List<com.example.similarscandemo.model.ProductCategory>) {
+        val adapter = categoryAdapter
+        if (adapter == null) {
+            categoryAdapter = ProductCategoryAdapter(this, categories)
+            categoryList.adapter = categoryAdapter
+        } else {
+            adapter.submitList(categories)
+        }
     }
 
     private fun finishScanUi(summary: String, message: String) {
@@ -262,7 +298,7 @@ class MainActivity : Activity() {
         scanButton.text = "Rescan"
         summaryText.text = summary
         statusText.text = message
-        render(scanner.loadCachedGroups())
+        loadAndRenderCachedGroups(updateCachedSummary = false)
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -311,6 +347,7 @@ class MainActivity : Activity() {
     companion object {
         const val EXTRA_REQUEST_PERMISSION = "request_permission"
         private const val MEDIA_CHANGE_DEBOUNCE_MS = 2_000L
+        private const val RESULT_RENDER_THROTTLE_MS = 800L
         private const val SERVICE_START_GRACE_MS = 2_000L
         private const val STATE_PENDING_SCAN = "state_pending_scan"
         private const val STATE_NOTIFICATION_IN_FLIGHT = "state_notification_in_flight"
