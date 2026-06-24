@@ -27,9 +27,12 @@ data class Threshold(
         )
 
         /**
-         * 竞品 qh.b：视频使用更严格的阈值。
+         * 严格视频阈值。
+         *
+         * 反编译代码中这组数值来自 qh.b：dHash 直接命中只允许 0..2，
+         * 中间距离再用更小的 colorHash 距离过滤，适合画面结构重复度较高的截图/录屏类内容。
          */
-        private val videoThreshold = Threshold(
+        private val strictVideoLikeThreshold = Threshold(
             directImageDistance = 0L..2L,
             maxImageDistanceExclusive = 16L,
             colorRanges = listOf(
@@ -39,28 +42,25 @@ data class Threshold(
         )
 
         /**
-         * 竞品 qh.c：截图使用的阈值，比照片更严格。
+         * 普通视频阈值。
+         *
+         * 当前保留普通视频独立入口，便于后续继续核对竞品 VIDEO 路径。
          */
-        private val screenshotThreshold = Threshold(
-            directImageDistance = 0L..2L,
-            maxImageDistanceExclusive = 16L,
-            colorRanges = listOf(
-                ColorRange(2L..10L, 0L..5L),
-                ColorRange(10L..16L, 0L..2L)
-            )
-        )
+        private val videoThreshold = strictVideoLikeThreshold
 
         /**
-         * 录屏使用的阈值，与普通照片相同。
+         * 截图阈值。
          */
-        private val screenRecordingThreshold = Threshold(
-            directImageDistance = 0L..4L,
-            maxImageDistanceExclusive = 18L,
-            colorRanges = listOf(
-                ColorRange(4L..10L, 0L..7L),
-                ColorRange(10L..18L, 0L..5L)
-            )
-        )
+        private val screenshotThreshold = strictVideoLikeThreshold
+
+        /**
+         * 录屏阈值。
+         *
+         * 录屏常包含大片静止 UI、开场动画和重复转场，如果使用普通照片阈值，
+         * 容易把只存在局部相似的录屏合并到同一组。这里改为严格阈值，
+         * 与截图/严格视频类内容保持一致，降低误合并。
+         */
+        private val screenRecordingThreshold = strictVideoLikeThreshold
 
         fun forKind(kind: MediaKind): Threshold {
             return when (kind) {

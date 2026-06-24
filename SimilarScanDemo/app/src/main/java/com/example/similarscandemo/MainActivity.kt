@@ -41,6 +41,15 @@ class MainActivity : Activity() {
     private var receiverRegistered = false
     private var observerRegistered = false
     private var isScanning = false
+    /*
+     * 首次安装时会连续出现“媒体权限”和“通知权限”两个系统弹窗。
+     * 弹窗切换会触发 Activity onPause/onResume，如果只依赖权限回调直接启动扫描，
+     * UI 容易被 onResume 的缓存刷新重置成 Rescan。这里用显式 pending 状态串起权限链路。
+     */
+    private var pendingScanAfterPermission = false
+    private var notificationRequestInFlight = false
+    private var notificationPermissionHandled = false
+    private var scanStartRequestedAt = 0L
     private val mediaChangedScan = Runnable {
         if (!isScanning && MediaPermissionHelper.hasPermission(this)) startScan()
     }
@@ -75,6 +84,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        pendingScanAfterPermission = savedInstanceState?.getBoolean(STATE_PENDING_SCAN, false) ?: false
+        notificationRequestInFlight = savedInstanceState?.getBoolean(STATE_NOTIFICATION_IN_FLIGHT, false) ?: false
+        notificationPermissionHandled = savedInstanceState?.getBoolean(STATE_NOTIFICATION_HANDLED, false) ?: false
         if (savedInstanceState == null && DeleteOperationStore.shouldRecover(this)) {
             // 全新进入主页时恢复上次进程遗留的删除状态；Activity 重建时不干扰系统确认。
             ScanDatabase(applicationContext).recoverStaleDeletePending()
@@ -89,13 +101,13 @@ class MainActivity : Activity() {
 
         showCachedResults()
         scanButton.setOnClickListener {
-            if (MediaPermissionHelper.hasPermission(this)) requestNotificationThenScan()
+            if (MediaPermissionHelper.hasPermission(this)) continuePermissionFlowAndScan()
             else MediaPermissionHelper.request(this)
         }
         if (intent.getBooleanExtra(EXTRA_REQUEST_PERMISSION, false)) {
             mainHandler.post {
                 if (MediaPermissionHelper.hasPermission(this)) {
-                    requestNotificationThenScan()
+                    continuePermissionFlowAndScan()
                 } else {
                     MediaPermissionHelper.request(this)
                 }
@@ -112,36 +124,62 @@ class MainActivity : Activity() {
         if (requestCode == MediaPermissionHelper.REQUEST_CODE &&
             MediaPermissionHelper.hasPermission(this)
         ) {
-            requestNotificationThenScan()
+            continuePermissionFlowAndScan()
         } else if (requestCode == NotificationPermissionHelper.REQUEST_CODE) {
-            startScan()
+            notificationRequestInFlight = false
+            notificationPermissionHandled = true
+            startPendingScanIfReady()
         } else {
             statusText.text = "Photo and video access is required."
         }
     }
 
-    private fun requestNotificationThenScan() {
-        if (NotificationPermissionHelper.needsRequest(this)) {
+    private fun continuePermissionFlowAndScan() {
+        pendingScanAfterPermission = true
+        updateScanUiFromState()
+        if (shouldRequestNotificationBeforeScan() && !notificationRequestInFlight) {
+            notificationRequestInFlight = true
             NotificationPermissionHelper.request(this)
         } else {
-            startScan()
+            startPendingScanIfReady()
         }
     }
 
     override fun onResume() {
         super.onResume()
         if (::scanner.isInitialized) {
-            showCachedResults()
-            isScanning = MediaScanService.isRunning
-            scanButton.isEnabled = !isScanning
-            scanButton.text = if (isScanning) "Scanning..." else "Rescan"
-            progressBar.visibility = if (isScanning) View.VISIBLE else View.GONE
+            if (pendingScanAfterPermission) {
+                startPendingScanIfReady()
+            } else {
+                showCachedResults()
+            }
+            updateScanUiFromState()
         }
+    }
+
+    private fun startPendingScanIfReady() {
+        if (!pendingScanAfterPermission) return
+        if (!MediaPermissionHelper.hasPermission(this)) return
+        if (shouldRequestNotificationBeforeScan()) {
+            if (!notificationRequestInFlight) {
+                notificationRequestInFlight = true
+                NotificationPermissionHelper.request(this)
+            }
+            updateScanUiFromState()
+            return
+        }
+        pendingScanAfterPermission = false
+        startScan()
+    }
+
+    private fun shouldRequestNotificationBeforeScan(): Boolean {
+        return NotificationPermissionHelper.needsRequest(this) && !notificationPermissionHandled
     }
 
     private fun startScan() {
         if (isScanning) return
         isScanning = true
+        scanStartRequestedAt = System.currentTimeMillis()
         scanButton.isEnabled = false
         scanButton.text = "Scanning..."
         progressBar.visibility = View.VISIBLE
@@ -151,6 +189,30 @@ class MainActivity : Activity() {
             startForegroundService(intent)
         } else {
             startService(intent)
+        }
+    }
+
+    private fun updateScanUiFromState() {
+        /*
+         * startForegroundService 到 Service.onStartCommand 之间有一个很短的空窗，
+         * 这段时间 MediaScanService.isRunning 可能还是 false，不能立刻把按钮打回 Rescan。
+         * 如果服务已结束且没有待启动权限链路，则允许 UI 回到可重新扫描状态。
+         */
+        val waitingForServiceStart = isScanning &&
+            !MediaScanService.isRunning &&
+            System.currentTimeMillis() - scanStartRequestedAt < SERVICE_START_GRACE_MS
+        isScanning = MediaScanService.isRunning || waitingForServiceStart
+        val preparing = pendingScanAfterPermission || notificationRequestInFlight
+        scanButton.isEnabled = !isScanning && !preparing
+        scanButton.text = when {
+            isScanning -> "Scanning..."
+            preparing -> "Preparing scan..."
+            else -> "Rescan"
+        }
+        progressBar.visibility = if (isScanning || preparing) View.VISIBLE else View.GONE
+        if (preparing && !isScanning) {
+            summaryText.text = "Preparing media scan"
+            statusText.text = "Finishing permission setup..."
         }
     }
 
@@ -171,6 +233,13 @@ class MainActivity : Activity() {
             observerRegistered = false
         }
         super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(STATE_PENDING_SCAN, pendingScanAfterPermission)
+        outState.putBoolean(STATE_NOTIFICATION_IN_FLIGHT, notificationRequestInFlight)
+        outState.putBoolean(STATE_NOTIFICATION_HANDLED, notificationPermissionHandled)
+        super.onSaveInstanceState(outState)
     }
 
     private fun showCachedResults() {
@@ -242,5 +311,9 @@ class MainActivity : Activity() {
     companion object {
         const val EXTRA_REQUEST_PERMISSION = "request_permission"
         private const val MEDIA_CHANGE_DEBOUNCE_MS = 2_000L
+        private const val SERVICE_START_GRACE_MS = 2_000L
+        private const val STATE_PENDING_SCAN = "state_pending_scan"
+        private const val STATE_NOTIFICATION_IN_FLIGHT = "state_notification_in_flight"
+        private const val STATE_NOTIFICATION_HANDLED = "state_notification_handled"
     }
 }

@@ -399,7 +399,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                             if (kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING) {
                                 val anchorVideo = anchor.videoFingerprint ?: return@filter false
                                 val candidateVideo = candidate.videoFingerprint ?: return@filter false
-                                anchorVideo.isSimilarTo(candidateVideo)
+                                anchorVideo.isSimilarTo(candidateVideo, kind)
                             } else {
                                 anchor.hash.isSimilarTo(candidate.hash, kind)
                             }
@@ -1030,17 +1030,24 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         kinds: List<MediaKind>,
         excludedCategories: Set<GroupCategory>
     ) {
-        val assets = loadAssets(
+        val stats = loadAssetStats(
             kinds = kinds,
             excludedCategories = excludedCategories
         )
-        if (assets.isEmpty()) return
+        if (stats.count == 0) return
+        val assets = loadAssets(
+            kinds = kinds,
+            excludedCategories = excludedCategories,
+            limit = OTHER_GROUP_PREVIEW_LIMIT
+        )
         result += SimilarGroup(
             title = title,
-            subtitle = "${assets.size} assets · ${FormatUtils.formatBytes(assets.sumOf { it.size })}",
+            subtitle = "${stats.count} assets · ${FormatUtils.formatBytes(stats.totalSize)}",
             category = GroupCategory.OTHER,
             kind = groupKind,
-            assets = assets
+            assets = assets,
+            totalAssetCount = stats.count,
+            totalSizeBytes = stats.totalSize
         )
     }
 
@@ -1174,8 +1181,67 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
 
     private fun loadAssets(
         kinds: List<MediaKind>,
-        excludedCategories: Set<GroupCategory>
+        excludedCategories: Set<GroupCategory>,
+        limit: Int? = null
     ): List<MediaAsset> {
+        val (whereSql, args) = assetWhereClause(kinds, excludedCategories)
+        val limitSql = if (limit != null) "LIMIT ?" else ""
+        val queryArgs = if (limit != null) {
+            args + limit.toString()
+        } else {
+            args
+        }
+        return readableDatabase.rawQuery(
+            """
+            SELECT a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
+                   a.size, a.created_at, a.updated_at, a.bucket, a.path_hint,
+                   a.mime_type, a.is_favorite, a.is_edited, a.generation_added,
+                   a.generation_modified, a.chat_source, f.quality_score, f.content_sha256
+            FROM media_asset a
+            LEFT JOIN fingerprint f ON f.asset_id = a.id
+            WHERE $whereSql
+            ORDER BY a.created_at DESC
+            $limitSql
+            """.trimIndent(),
+            queryArgs.toTypedArray()
+        ).use { cursor ->
+            val assets = mutableListOf<MediaAsset>()
+            while (cursor.moveToNext()) assets += assetFromCursor(cursor, 0, true)
+            assets
+        }
+    }
+
+    private fun loadAssetStats(
+        kinds: List<MediaKind>,
+        excludedCategories: Set<GroupCategory>
+    ): AssetStats {
+        val (whereSql, args) = assetWhereClause(kinds, excludedCategories)
+        return readableDatabase.rawQuery(
+            """
+            SELECT COUNT(*), COALESCE(SUM(a.size), 0)
+            FROM media_asset a
+            WHERE $whereSql
+            """.trimIndent(),
+            args.toTypedArray()
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                AssetStats(
+                    count = cursor.getInt(0),
+                    totalSize = cursor.getLong(1)
+                )
+            } else {
+                AssetStats(0, 0L)
+            }
+        }
+    }
+
+    /**
+     * Other 分类统计和预览共用同一段过滤条件，避免首页数量和实际列表口径不一致。
+     */
+    private fun assetWhereClause(
+        kinds: List<MediaKind>,
+        excludedCategories: Set<GroupCategory>
+    ): Pair<String, List<String>> {
         val args = mutableListOf<String>()
         val placeholders = kinds.joinToString(",") {
             args += it.name
@@ -1197,25 +1263,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         } else {
             ""
         }
-        return readableDatabase.rawQuery(
-            """
-            SELECT a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
-                   a.size, a.created_at, a.updated_at, a.bucket, a.path_hint,
-                   a.mime_type, a.is_favorite, a.is_edited, a.generation_added,
-                   a.generation_modified, a.chat_source, f.quality_score, f.content_sha256
-            FROM media_asset a
-            LEFT JOIN fingerprint f ON f.asset_id = a.id
-            WHERE a.type IN ($placeholders)
+        return """
+            a.type IN ($placeholders)
               AND a.state='ACTIVE'
               $excludeSql
-            ORDER BY a.created_at DESC
-            """.trimIndent(),
-            args.toTypedArray()
-        ).use { cursor ->
-            val assets = mutableListOf<MediaAsset>()
-            while (cursor.moveToNext()) assets += assetFromCursor(cursor, 0, true)
-            assets
-        }
+        """.trimIndent() to args
     }
 
     private fun assetFromCursor(
@@ -1273,6 +1325,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
     companion object {
         private const val DB_NAME = "similar_scan.db"
         /*
+         * 首页只需要少量缩略图预览。Other 分类可能包含上千条资源，
+         * 如果一次性读入会撑爆 CursorWindow，并让扫描进度广播在主线程崩溃。
+         */
+        private const val OTHER_GROUP_PREVIEW_LIMIT = 120
+        /*
          * v17 修复视频分组锚点排序：
          * 1. 添加 date_added 字段到数据库，用于视频锚点排序。
          * 2. 视频分组排序从 media_store_id DESC 改为 date_added DESC，与竞品完全一致。
@@ -1289,6 +1346,11 @@ data class CandidateFingerprint(
     val asset: MediaAsset,
     val hash: CombinedHash,
     val videoFingerprint: VideoFingerprint? = null
+)
+
+private data class AssetStats(
+    val count: Int,
+    val totalSize: Long
 )
 
 data class HashIndexEntry(

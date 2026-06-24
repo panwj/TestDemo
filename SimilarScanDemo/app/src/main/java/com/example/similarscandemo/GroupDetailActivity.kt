@@ -141,7 +141,7 @@ class GroupDetailActivity : Activity() {
             selectionInitialized = true
         }
         findViewById<TextView>(R.id.detailSubtitle).text =
-            "${category.assets.size} items · ${FormatUtils.formatBytes(category.totalSize)}"
+            "${category.itemCount} items · ${FormatUtils.formatBytes(category.totalSize)}"
         renderContent()
     }
 

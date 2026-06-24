@@ -12,5 +12,15 @@ data class SimilarGroup(
     val subtitle: String,
     val category: GroupCategory,
     val kind: MediaKind,
-    val assets: List<MediaAsset>
+    val assets: List<MediaAsset>,
+    /**
+     * 当前组的真实资源数量。首页 Other 分类只加载少量预览资源，
+     * 因此不能用 assets.size 作为统计口径。
+     */
+    val totalAssetCount: Int = assets.size,
+    /**
+     * 当前组的真实资源总大小。默认使用已加载资源求和；
+     * Other 分类会由 SQL 聚合填入真实值。
+     */
+    val totalSizeBytes: Long = assets.sumOf { it.size }
 )

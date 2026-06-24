@@ -238,7 +238,7 @@ class SimilarMediaScanner(context: Context) {
 
         val similarCandidates = database.findVideoFingerprintCandidates(token.assetId, asset).filter { candidate ->
             val candidateFingerprint = candidate.videoFingerprint ?: return@filter false
-            fingerprint.isSimilarTo(candidateFingerprint)
+            fingerprint.isSimilarTo(candidateFingerprint, asset.kind)
         }
         if (!database.markVideoFingerprintDone(token, fingerprint, asset, fingerprint.qualityScore)) {
             return

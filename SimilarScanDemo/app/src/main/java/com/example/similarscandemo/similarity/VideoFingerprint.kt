@@ -14,19 +14,19 @@ data class VideoFingerprint(
 ) {
     fun isValid(): Boolean = frames.isNotEmpty()
 
-    fun isSimilarTo(other: VideoFingerprint): Boolean {
+    fun isSimilarTo(other: VideoFingerprint, kind: MediaKind): Boolean {
         if (!isValid() || !other.isValid()) return false
 
         /*
-         * 竞品使用全帧笛卡尔积匹配：遍历所有帧组合，只要有足够多的帧对相似即判定视频相似。
-         * MIN_MATCHED_FRAME_COUNT=2 表示至少需要2对相似帧。
+         * 竞品使用多帧匹配：遍历抽出的帧组合，只要有足够多的帧相似即判定视频相似。
+         * 这里的 kind 决定每一帧使用普通视频还是录屏阈值，避免录屏误用普通视频参数。
          */
         var matchedCount = 0
         for (frame in frames) {
             if (!frame.isValid()) continue
             for (candidate in other.frames) {
                 if (!candidate.isValid()) continue
-                if (frame.isSimilarTo(candidate, MediaKind.VIDEO)) {
+                if (frame.isSimilarTo(candidate, kind)) {
                     matchedCount++
                     if (matchedCount >= MIN_MATCHED_FRAME_COUNT) return true
                     break

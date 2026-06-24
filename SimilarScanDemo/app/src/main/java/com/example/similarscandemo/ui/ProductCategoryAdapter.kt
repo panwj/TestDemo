@@ -39,7 +39,7 @@ class ProductCategoryAdapter(
 
         view.findViewById<TextView>(R.id.categoryTitle).text = category.type.title
         view.findViewById<TextView>(R.id.categoryStats).text =
-            "${assets.size} $unit · ${FormatUtils.formatBytes(category.totalSize)}"
+            "${category.itemCount} $unit · ${FormatUtils.formatBytes(category.totalSize)}"
 
         val previewGrid = view.findViewById<GridView>(R.id.categoryPreviewGrid)
         previewGrid.visibility = if (assets.isEmpty()) View.GONE else View.VISIBLE
