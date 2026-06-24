@@ -1,5 +1,8 @@
 # Product-Level Similar Media Scan Design
 
+> 历史文档：本文是早期产品级方案草稿，包含音频、旧视频描述和旧阈值口径。
+> 当前实现请以 `docs/current_technical_solution.md` 为准。
+>
 > 历史方案说明：v15 已按 Cleanup 竞品扫描范围删除音频枚举、音频权限和音频相似逻辑。
 > 本文中涉及 Audio/录音的章节仅保留为早期扩展设计，不属于当前 Demo 实现。
 

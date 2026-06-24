@@ -8,9 +8,9 @@
 
 相似和重复判断条件不在本次并发改造中变更，继续使用：
 
-- 竞品 native dHash 或 Kotlin 兼容实现。
+- Kotlin `DHash.kt` 双线性采样实现。
 - RGB 8x3 colorHash。
-- 竞品图片、截图和视频阈值。
+- 当前代码中的分媒体类型阈值。
 - 竞品 duplicateReference 重复归类规则。
 
 ## 2. 唯一数据源

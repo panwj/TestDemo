@@ -3,7 +3,10 @@ package com.example.similarscandemo.similarity
 import com.example.similarscandemo.model.MediaKind
 
 /**
- * 与竞品保持一致的分类型阈值。
+ * 分媒体类型阈值。
+ *
+ * 图片沿用竞品 qh.a 参数；截图、普通视频和录屏当前统一使用严格参数，
+ * 这是为降低视频/录屏大组误合并后的最新 Demo 口径。
  *
  * directImageDistance 表示 dHash 汉明距离足够小时直接判相似；
  * colorRanges 表示 dHash 处于中间区间时，再用 colorHash 过滤误判。
@@ -42,9 +45,7 @@ data class Threshold(
         )
 
         /**
-         * 普通视频阈值。
-         *
-         * 当前保留普通视频独立入口，便于后续继续核对竞品 VIDEO 路径。
+         * 普通视频阈值。当前使用严格视频类参数，避免静止画面或相同片头导致过度合并。
          */
         private val videoThreshold = strictVideoLikeThreshold
 

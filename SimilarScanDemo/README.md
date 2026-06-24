@@ -63,34 +63,17 @@ Android 12 及以下：
 
 ## 相似算法
 
-### Kotlin dHash
-
-```text
-媒体 Bitmap
--> 9x8 网格双线性灰度采样
--> 每行比较相邻灰度
--> 生成 64 位 dHash
-```
-
-核心代码位于：
-
-```text
-similarity/HashCalculator.kt
-similarity/KotlinDHash.kt
-```
-
-项目不再包含 native so、JNI 桥接或 Hash 后端切换入口。
-
 ### dHash
 
 ```text
 Bitmap
 -> ARGB_8888
--> 9 x 8 缩放采样
--> 灰度转换
--> 横向相邻像素比较
+-> 9 x 8 网格双线性灰度采样
+-> 每行横向相邻采样点比较
 -> 64-bit imageHash
 ```
+
+核心代码位于 `similarity/KotlinDHash.kt`。项目不再包含 native so、JNI 桥接或 Hash 后端切换入口。
 
 ### colorHash
 
@@ -100,7 +83,7 @@ RGB 三通道
 形成 Double[8][3]
 ```
 
-### 普通照片 / 视频 / 录屏阈值
+### 普通照片阈值
 
 | dHash 汉明距离 | colorHash 距离要求 | 结果 |
 | --- | ---: | --- |
@@ -109,7 +92,7 @@ RGB 三通道
 | 10..17 | 0..5 | 相似 |
 | >=18 | 不相似 | 不相似 |
 
-### 截图阈值
+### 截图 / 普通视频 / 录屏阈值
 
 | dHash 汉明距离 | colorHash 距离要求 | 结果 |
 | --- | ---: | --- |
@@ -117,6 +100,12 @@ RGB 三通道
 | 2..10 | 0..5 | 相似 |
 | 10..15 | 0..2 | 相似 |
 | >=16 | 不相似 | 不相似 |
+
+详细的 Bitmap 获取、视频抽帧、阈值和分组策略见：
+
+```text
+docs/current_technical_solution.md
+```
 
 ## 构建
 
@@ -155,7 +144,7 @@ MediaStore Cursor
 -> 视觉资源计算 dHash/colorHash
 -> 写入 fingerprint 表
 -> 图片通过 BK-Tree 按汉明距离召回候选
--> 视频按竞品规则抽取 7～13 帧，并在全部帧之间交叉比较
+-> 视频按当前多帧规则抽帧，并要求至少 2 个有效帧命中
 -> 精确阈值过滤
 -> 更新 similar_group / similar_group_item
 -> UI 收到进度回调并刷新缓存结果
@@ -167,7 +156,7 @@ MediaStore Cursor
 SQLite 读取 assetId + 64-bit imageHash
 -> 内存 BK-Tree 按汉明距离完整召回
 -> 批量回库读取 colorHash
--> 使用竞品阈值精判
+-> 使用当前分媒体类型阈值精判
 ```
 
 Kotlin dHash 使用项目根目录 `DHash.kt` 的双线性网格采样实现，不再依赖
@@ -185,13 +174,28 @@ BK-Tree 不使用拍摄时间或宽高比做硬过滤，因此不会在最终阈
 - 下次打开先展示旧结果，再继续增量更新。
 - 常规重扫只查询 generation 发生变化的资源，每 24 小时执行一次完整同步。
 
-视频扫描对齐竞品的关键方式：
+视频扫描当前关键方式：
 
 ```text
-ContentResolver.loadThumbnail(1024x1024)
--> dHash + colorHash
--> 使用视频/录屏阈值比较
--> 不按文件大小拒绝扫描
+MediaStore DATA 真实路径
+-> MediaMetadataRetriever 多时间点抽帧
+-> 每帧输出 9x8 Bitmap
+-> 每帧计算 dHash + colorHash
+-> 至少 2 个有效帧命中后判定视频相似
 ```
 
 竞品扫描范围只包含图片和视频，因此对齐版本不请求音频权限，也不枚举音频资源。
+
+## 文档入口
+
+当前代码对应的完整技术方案：
+
+```text
+docs/current_technical_solution.md
+```
+
+文档清理和历史文档状态：
+
+```text
+docs/documentation_inventory.md
+```
