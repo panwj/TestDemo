@@ -1,0 +1,59 @@
+package com.example.similarscandemo.similarity
+
+import android.graphics.Bitmap
+
+/**
+ * 计算图片组合指纹。
+ *
+ * imageHash 仅使用项目根目录 DHash.kt 对应的 Kotlin 双线性采样实现。
+ * colorHash 始终使用与竞品一致的 RGB 8x3 分桶算法。
+ */
+object HashCalculator {
+    fun buildHash(source: Bitmap): CombinedHash {
+        return CombinedHash(
+            imageHash = KotlinDHash.fromBitmap(source),
+            colorHash = colorHash(source)
+        )
+    }
+
+    /**
+     * RGB 颜色直方图：每个颜色通道按 32 为步长分为 8 桶。
+     *
+     * 除数使用像素数 / 16，与竞品反编译实现保持一致。
+     */
+    private fun colorHash(source: Bitmap): Array<DoubleArray> {
+        val bitmap = if (source.config == Bitmap.Config.ARGB_8888) {
+            source
+        } else {
+            source.copy(Bitmap.Config.ARGB_8888, false)
+        }
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+
+        val red = IntArray(256)
+        val green = IntArray(256)
+        val blue = IntArray(256)
+        for (pixel in pixels) {
+            red[(pixel shr 16) and 0xFF]++
+            green[(pixel shr 8) and 0xFF]++
+            blue[pixel and 0xFF]++
+        }
+
+        val divisor = pixels.size / 16.0
+        val hash = Array(8) { DoubleArray(3) }
+        for (bucket in 0 until 8) {
+            val start = bucket * 32
+            val end = start + 32
+            for (value in start until end) {
+                hash[bucket][0] += red[value].toDouble()
+                hash[bucket][1] += green[value].toDouble()
+                hash[bucket][2] += blue[value].toDouble()
+            }
+            hash[bucket][0] /= divisor
+            hash[bucket][1] /= divisor
+            hash[bucket][2] /= divisor
+        }
+        if (bitmap !== source) bitmap.recycle()
+        return hash
+    }
+}

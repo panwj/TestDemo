@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#020617"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/onboardingSkip"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:gravity="right|center_vertical"
+        android:text="Skip"
+        android:textColor="#94A3B8"
+        android:textSize="14sp" />
+
+    <ViewFlipper
+        android:id="@+id/onboardingFlipper"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:inAnimation="@android:anim/fade_in"
+        android:outAnimation="@android:anim/fade_out">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="260dp"
+                android:background="@drawable/onboarding_panel_blue"
+                android:gravity="center"
+                android:text="▣"
+                android:textColor="#60A5FA"
+                android:textSize="112sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:gravity="center"
+                android:text="Welcome to Cleanup"
+                android:textColor="#FFFFFF"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:text="Your photos stay on this device while Cleanup organizes the gallery."
+                android:textColor="#94A3B8"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="260dp"
+                android:background="@drawable/onboarding_panel_red"
+                android:gravity="center"
+                android:text="▥  ▥"
+                android:textColor="#F87171"
+                android:textSize="72sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:gravity="center"
+                android:text="Remove Duplicate Photos"
+                android:textColor="#FFFFFF"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:text="Keep the best shot and review duplicate or similar media in groups."
+                android:textColor="#94A3B8"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="260dp"
+                android:background="@drawable/onboarding_panel_green"
+                android:gravity="center"
+                android:text="80%"
+                android:textColor="#4ADE80"
+                android:textSize="82sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:gravity="center"
+                android:text="Free Up Phone Storage"
+                android:textColor="#FFFFFF"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:text="Review screenshots, videos, recordings and other unnecessary media."
+                android:textColor="#94A3B8"
+                android:textSize="15sp" />
+        </LinearLayout>
+    </ViewFlipper>
+
+    <TextView
+        android:id="@+id/pageIndicator"
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:gravity="center"
+        android:text="●  ○  ○"
+        android:textColor="#60A5FA"
+        android:textSize="17sp" />
+
+    <Button
+        android:id="@+id/onboardingContinue"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:background="@drawable/button_primary"
+        android:text="Next"
+        android:textAllCaps="false"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp" />
+</LinearLayout>
