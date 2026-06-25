@@ -199,3 +199,23 @@ docs/current_technical_solution.md
 ```text
 docs/documentation_inventory.md
 ```
+
+项目内 Codex skill：
+
+```text
+codex/skills/media-scan-analyzer/SKILL.md
+```
+
+该 skill 用于分析图库扫描核心逻辑、交互式确认不确定点，并输出一张信息图图片。
+
+生成信息图审核稿（默认 SVG + PNG）：
+
+```bash
+python3 codex/skills/media-scan-analyzer/scripts/generate_media_scan_infographic.py --project .
+```
+
+审核通过后生成最终信息图（默认 SVG + PNG）：
+
+```bash
+python3 codex/skills/media-scan-analyzer/scripts/generate_media_scan_infographic.py --project . --final
+```

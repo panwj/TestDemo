@@ -1,0 +1,4 @@
+interface:
+  display_name: "Media Scan Analyzer"
+  short_description: "Analyze gallery scan, hashes, thresholds, and diagrams"
+  default_prompt: "Analyze this Android media scan project, confirm uncertain points, and produce a technical summary with diagrams."

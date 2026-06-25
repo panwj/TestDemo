@@ -20,6 +20,9 @@
 | `README.md` | 当前 | 工程入口、功能摘要和构建说明 |
 | `docs/current_technical_solution.md` | 当前 | 当前代码对应的完整技术方案 |
 | `docs/documentation_inventory.md` | 当前 | 文档状态说明 |
+| `codex/skills/media-scan-analyzer/SKILL.md` | 当前 | 项目内 Codex skill，用于图库扫描逻辑分析和技术图输出 |
+| `docs/generated/media-scan-analyzer/review/media_scan_infographic_review.svg/png` | 审核稿 | 信息图审核稿，供用户互动式确认 |
+| `docs/generated/media-scan-analyzer/final/media_scan_infographic_final.svg/png` | 最终稿 | 用户审核通过后的最终信息图 |
 
 ## 3. 可作为历史参考
 
