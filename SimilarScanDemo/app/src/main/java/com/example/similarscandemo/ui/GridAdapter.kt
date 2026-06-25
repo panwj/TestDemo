@@ -23,16 +23,6 @@ class GridAdapter(
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): GridViewHolder {
         val view = LayoutInflater.from(activity).inflate(R.layout.item_grid, parent, false)
-        view.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            override fun onGlobalLayout() {
-                view.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                val width = view.width
-                if (width > 0) {
-                    view.layoutParams.height = width
-                    view.requestLayout()
-                }
-            }
-        })
         return GridViewHolder(view)
     }
 
@@ -56,7 +46,10 @@ class GridAdapter(
                 currentAsset?.let { onItemClick(it) }
             }
             selectionIndicator.setOnClickListener {
-                currentAsset?.let { onSelectionToggle(it, adapterPosition) }
+                val position = bindingAdapterPosition
+                if (position != RecyclerView.NO_POSITION) {
+                    currentAsset?.let { onSelectionToggle(it, position) }
+                }
             }
         }
 

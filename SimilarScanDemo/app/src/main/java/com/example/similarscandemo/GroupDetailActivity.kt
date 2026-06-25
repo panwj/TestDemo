@@ -50,7 +50,7 @@ class GroupDetailActivity : Activity() {
     private val selectedUris = linkedSetOf<String>()
     private val bestUris = linkedSetOf<String>()
     private val pendingDeleteUris = linkedSetOf<String>()
-    private var sortMode = SortMode.RECOMMENDED
+    private var sortMode = SortMode.NEWEST
     private var selectionInitialized = false
     private var receiverRegistered = false
     private var gridLayoutInitialized = false
@@ -91,6 +91,7 @@ class GroupDetailActivity : Activity() {
 
         selectAllButton.setOnClickListener { toggleSelectAll() }
         sortButton.setOnClickListener { showSortDialog() }
+        sortButton.text = sortMode.shortLabel
         deleteButton.setOnClickListener { requestDeleteSelected() }
         reloadLatestCategory()
     }
@@ -244,33 +245,63 @@ class GroupDetailActivity : Activity() {
 
     private fun sortedGroups(): List<SimilarGroup> {
         return category.groups
-            .map { it.copy(assets = sortAssets(it.assets)) }
+            .map { it.copy(assets = sortAssets(it.assets, keepBestFirst = true)) }
             .sortedByDescending { group ->
                 when (sortMode) {
                     SortMode.RECOMMENDED -> group.assets.maxOfOrNull { it.qualityScore } ?: 0.0
                     SortMode.NEWEST ->
-                        (group.assets.maxOfOrNull { it.createdAt.time } ?: 0L).toDouble()
+                        (group.assets.maxOfOrNull { mediaTimeKey(it) } ?: 0L).toDouble()
                     SortMode.OLDEST ->
-                        -(group.assets.minOfOrNull { it.createdAt.time } ?: 0L).toDouble()
+                        -(group.assets.minOfOrNull { mediaTimeKey(it) } ?: 0L).toDouble()
                     SortMode.LARGEST -> group.assets.sumOf { it.size }.toDouble()
                     SortMode.SMALLEST -> -group.assets.sumOf { it.size }.toDouble()
                 }
             }
     }
 
-    private fun sortAssets(assets: List<MediaAsset>): List<MediaAsset> {
-        return when (sortMode) {
+    private fun sortAssets(
+        assets: List<MediaAsset>,
+        keepBestFirst: Boolean = false
+    ): List<MediaAsset> {
+        val sorted = when (sortMode) {
             SortMode.RECOMMENDED -> assets.sortedWith(
                 compareByDescending<MediaAsset> { it.qualityScore }
                     .thenByDescending { it.isFavorite }
                     .thenByDescending { it.isEdited }
                     .thenByDescending { it.width.toLong() * it.height.toLong() }
             )
-            SortMode.NEWEST -> assets.sortedByDescending { it.createdAt.time }
-            SortMode.OLDEST -> assets.sortedBy { it.createdAt.time }
+            /*
+             * 默认展示顺序使用媒体资源时间倒序。createdAt 是当前项目统一后的媒体时间，
+             * dateAdded/id 作为兜底，保证同一时间戳下顺序稳定。
+             */
+            SortMode.NEWEST -> assets.sortedWith(
+                compareByDescending<MediaAsset> { it.createdAt.time }
+                    .thenByDescending { it.dateAdded }
+                    .thenByDescending { it.id }
+            )
+            SortMode.OLDEST -> assets.sortedWith(
+                compareBy<MediaAsset> { it.createdAt.time }
+                    .thenBy { it.dateAdded }
+                    .thenBy { it.id }
+            )
             SortMode.LARGEST -> assets.sortedByDescending { it.size }
             SortMode.SMALLEST -> assets.sortedBy { it.size }
         }
+        if (!keepBestFirst || sorted.size < 2) return sorted
+
+        /*
+         * 相似/重复组中 Best 是推荐保留项。无论当前展示按时间还是大小排序，
+         * Best 都固定放在第一位，剩余资源再按当前排序规则展示。
+         */
+        val bestUri = assets.firstOrNull { bestUris.contains(it.uri.toString()) }
+            ?.uri
+            ?.toString()
+            ?: return sorted
+        return sorted.sortedBy { if (it.uri.toString() == bestUri) 0 else 1 }
+    }
+
+    private fun mediaTimeKey(asset: MediaAsset): Long {
+        return maxOf(asset.createdAt.time, asset.dateAdded * 1000L)
     }
 
     private fun toggleAsset(asset: MediaAsset, position: Int = -1) {
@@ -391,7 +422,7 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun openPreviewFromFlatList(assets: List<MediaAsset>, position: Int) {
-        val asset = assets.getOrNull(position) ?: return
+        if (position !in assets.indices) return
         val tempGroup = SimilarGroup(
             id = 0,
             title = categoryType.title,

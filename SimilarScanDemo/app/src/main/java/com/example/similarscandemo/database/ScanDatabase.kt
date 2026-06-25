@@ -1169,7 +1169,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             LEFT JOIN fingerprint f ON f.asset_id = a.id
             WHERE i.group_id=?
               AND a.state='ACTIVE'
-            ORDER BY a.created_at ASC
+            /*
+             * 展示层按媒体时间倒序呈现扫描结果，与系统相册“最新在前”的浏览习惯一致。
+             * 相似分组的锚点顺序仍由扫描/重建阶段决定，这里只影响 UI 读取顺序。
+             */
+            ORDER BY a.created_at DESC, a.date_added DESC, a.media_store_id DESC
             """.trimIndent(),
             arrayOf(groupId.toString())
         ).use { cursor ->

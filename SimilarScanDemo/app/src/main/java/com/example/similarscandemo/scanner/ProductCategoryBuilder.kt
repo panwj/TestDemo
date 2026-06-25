@@ -24,7 +24,7 @@ object ProductCategoryBuilder {
             if (group.category != GroupCategory.SIMILAR) return@mapNotNull group
             val assets = group.assets.filterNot { (it.kind to it.id) in duplicateAssetKeys }
             if (assets.size < 2) null else group.copy(assets = assets)
-        }
+        }.map(::sortGroupByMediaTimeDesc)
 
         val otherPhotos = normalizedGroups
             .filter { it.category == GroupCategory.OTHER && it.kind == MediaKind.PHOTO }
@@ -35,10 +35,17 @@ object ProductCategoryBuilder {
         return ProductCategoryType.entries.map { type ->
             val categoryGroups = when (type) {
                 ProductCategoryType.SIMILAR -> matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.PHOTO)
-                ProductCategoryType.DUPLICATES -> normalizedGroups.filter {
-                    it.category == GroupCategory.DUPLICATE &&
-                        (it.kind == MediaKind.PHOTO || it.kind == MediaKind.SCREENSHOT)
-                }
+                ProductCategoryType.DUPLICATES -> normalizedGroups
+                    .filter {
+                        it.category == GroupCategory.DUPLICATE &&
+                            (it.kind == MediaKind.PHOTO || it.kind == MediaKind.SCREENSHOT)
+                    }
+                    .map(::sortGroupByMediaTimeDesc)
+                    .sortedWith(
+                        compareByDescending<SimilarGroup> { group ->
+                            group.assets.maxOfOrNull { it.createdAt.time } ?: 0L
+                        }.thenByDescending { it.id }
+                    )
                 ProductCategoryType.SIMILAR_SCREENSHOTS ->
                     matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.SCREENSHOT)
                 ProductCategoryType.SIMILAR_VIDEOS ->
@@ -65,7 +72,18 @@ object ProductCategoryBuilder {
         category: GroupCategory,
         kind: MediaKind
     ): List<SimilarGroup> {
-        return groups.filter { it.category == category && it.kind == kind }
+        /*
+         * 首页和详情页默认按照“组内最新媒体时间”倒序展示扫描结果。
+         * 这样刚拍摄/刚录制的资源会排在前面，也能与系统相册的浏览顺序保持一致。
+         */
+        return groups
+            .filter { it.category == category && it.kind == kind }
+            .map(::sortGroupByMediaTimeDesc)
+            .sortedWith(
+                compareByDescending<SimilarGroup> { group ->
+                    group.assets.maxOfOrNull { it.createdAt.time } ?: 0L
+                }.thenByDescending { it.id }
+            )
     }
 
     private fun synthetic(
@@ -74,14 +92,52 @@ object ProductCategoryBuilder {
         assets: List<MediaAsset>
     ): List<SimilarGroup> {
         if (assets.isEmpty()) return emptyList()
+        val sortedAssets = assets.sortedWith(MEDIA_TIME_DESC)
         return listOf(
             SimilarGroup(
                 title = title,
                 subtitle = "",
                 category = GroupCategory.OTHER,
                 kind = kind,
-                assets = assets
+                assets = sortedAssets,
+                totalAssetCount = sortedAssets.size,
+                totalSizeBytes = sortedAssets.sumOf { it.size }
             )
         )
     }
+
+    private fun sortGroupByMediaTimeDesc(group: SimilarGroup): SimilarGroup {
+        val timeSorted = group.assets.sortedWith(MEDIA_TIME_DESC)
+        val sortedAssets = if (
+            group.category == GroupCategory.SIMILAR ||
+            group.category == GroupCategory.DUPLICATE
+        ) {
+            val best = bestAsset(timeSorted)
+            if (best == null) {
+                timeSorted
+            } else {
+                listOf(best) + timeSorted.filterNot { it.uri == best.uri }
+            }
+        } else {
+            timeSorted
+        }
+        return group.copy(assets = sortedAssets)
+    }
+
+    private fun bestAsset(assets: List<MediaAsset>): MediaAsset? {
+        return assets.maxWithOrNull(
+            compareBy<MediaAsset>(
+                { it.qualityScore },
+                { it.isFavorite },
+                { it.isEdited },
+                { it.width.toLong() * it.height.toLong() },
+                { it.size },
+                { it.createdAt.time }
+            )
+        )
+    }
+
+    private val MEDIA_TIME_DESC = compareByDescending<MediaAsset> { it.createdAt.time }
+        .thenByDescending { it.dateAdded }
+        .thenByDescending { it.id }
 }

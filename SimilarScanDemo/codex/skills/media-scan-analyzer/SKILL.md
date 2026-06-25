@@ -51,7 +51,7 @@ This skill analyzes Android local gallery scanning and similar-media detection p
    - `docs/generated/media-scan-analyzer/final/media_scan_infographic_final.svg`
    - `docs/generated/media-scan-analyzer/final/media_scan_infographic_final.png`
 
-   If PNG export fails, keep the SVG and tell the user the local renderer is unavailable.
+   If PNG export fails in the sandbox, rerun the command with permission to launch the local browser/Quick Look renderer. If it still fails, keep the SVG and tell the user the local renderer is unavailable.
 
 4. Analyze in this order:
    - Permission and first-launch flow.
