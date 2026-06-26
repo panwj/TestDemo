@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.database.sqlite.SQLiteStatement
 import android.net.Uri
 import com.example.similarscandemo.model.GroupCategory
 import com.example.similarscandemo.model.MediaAsset
@@ -400,67 +401,137 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         db.beginTransaction()
         try {
             supportedKinds.forEach kindLoop@{ kind ->
+                /*
+                 * 扫描过程中 processVisual/processVideo 已经把相似候选实时写入
+                 * Similar 分组。最终重建时先把这些候选读成邻接表，再删除旧组并按竞品
+                 * “锚点直连”规则重建，可以避免扫描完成后再次为同一批资源跑 BK-Tree。
+                 *
+                 * 如果是旧数据、异常中断或首次进入时没有可复用候选，则回退到原 BK-Tree
+                 * 召回路径，保证结果不会因为候选表缺失而被清空。
+                 */
+                val reusableCandidateMap = loadExistingSimilarCandidateMap(db, kind)
                 deleteSimilarGroups(db, kind)
                 val records = loadGroupingFingerprints(db, kind)
                 if (records.size < 2) return@kindLoop
 
                 val recordsById = records.associateBy(GroupingFingerprint::assetId)
                 val remainingIds = records.mapTo(linkedSetOf(), GroupingFingerprint::assetId)
-                val index = HammingBkTree().also { tree ->
-                    records.forEach { record ->
-                        record.indexHashes.forEach { imageHash ->
-                            tree.add(record.assetId, imageHash)
-                        }
-                    }
-                }
-
-                records.forEach anchorLoop@{ anchor ->
-                    // 已被更早锚点收进分组的资源不再作为新锚点。
-                    if (!remainingIds.remove(anchor.assetId)) return@anchorLoop
-
-                    val matchedIds = anchor.indexHashes
-                        .asSequence()
-                        .flatMap { imageHash ->
-                            index.query(
-                                imageHash,
-                                Threshold.maxCandidateDistance(kind)
-                            ).asSequence()
-                        }
-                        .distinct()
-                        .filter(remainingIds::contains)
-                        .filter { candidateId ->
-                            val candidate = recordsById[candidateId] ?: return@filter false
-                            if (kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING) {
-                                val anchorVideo = anchor.videoFingerprint ?: return@filter false
-                                val candidateVideo = candidate.videoFingerprint ?: return@filter false
-                                anchorVideo.isSimilarTo(candidateVideo, kind)
-                            } else {
-                                anchor.hash.isSimilarTo(candidate.hash, kind)
+                val index = if (reusableCandidateMap.isEmpty()) {
+                    HammingBkTree().also { tree ->
+                        records.forEach { record ->
+                            record.indexHashes.forEach { imageHash ->
+                                tree.add(record.assetId, imageHash)
                             }
                         }
-                        .toList()
-
-                    if (matchedIds.isEmpty()) return@anchorLoop
-                    val groupId = db.insert(
-                        "similar_group",
-                        null,
-                        ContentValues().apply {
-                            put("category", GroupCategory.SIMILAR.name)
-                            put("type", kind.name)
-                            put("updated_at", System.currentTimeMillis())
-                        }
-                    )
-                    insertGroupItem(db, groupId, anchor.assetId)
-                    matchedIds.forEach { assetId ->
-                        insertGroupItem(db, groupId, assetId)
-                        remainingIds.remove(assetId)
                     }
+                } else {
+                    null
+                }
+                val insertGroupItemStatement = db.compileStatement(
+                    "INSERT OR IGNORE INTO similar_group_item(group_id, asset_id) VALUES(?, ?)"
+                )
+
+                try {
+                    records.forEach anchorLoop@{ anchor ->
+                        // 已被更早锚点收进分组的资源不再作为新锚点。
+                        if (!remainingIds.remove(anchor.assetId)) return@anchorLoop
+
+                        val matchedIds = if (index == null) {
+                            reusableCandidateMap[anchor.assetId]
+                                .orEmpty()
+                                .asSequence()
+                        } else {
+                            anchor.indexHashes
+                                .asSequence()
+                                .flatMap { imageHash ->
+                                    index.query(
+                                        imageHash,
+                                        Threshold.maxCandidateDistance(kind)
+                                    ).asSequence()
+                                }
+                                .distinct()
+                        }
+                            .filter(remainingIds::contains)
+                            .filter { candidateId ->
+                                val candidate = recordsById[candidateId] ?: return@filter false
+                                if (kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING) {
+                                    val anchorVideo = anchor.videoFingerprint ?: return@filter false
+                                    val candidateVideo = candidate.videoFingerprint ?: return@filter false
+                                    anchorVideo.isSimilarTo(candidateVideo, kind)
+                                } else {
+                                    anchor.hash.isSimilarTo(candidate.hash, kind)
+                                }
+                            }
+                            .toList()
+
+                        if (matchedIds.isEmpty()) return@anchorLoop
+                        val groupId = db.insert(
+                            "similar_group",
+                            null,
+                            ContentValues().apply {
+                                put("category", GroupCategory.SIMILAR.name)
+                                put("type", kind.name)
+                                put("updated_at", System.currentTimeMillis())
+                            }
+                        )
+                        insertGroupItem(insertGroupItemStatement, groupId, anchor.assetId)
+                        matchedIds.forEach { assetId ->
+                            insertGroupItem(insertGroupItemStatement, groupId, assetId)
+                            remainingIds.remove(assetId)
+                        }
+                    }
+                } finally {
+                    insertGroupItemStatement.close()
                 }
             }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+    }
+
+    private fun loadExistingSimilarCandidateMap(
+        db: SQLiteDatabase,
+        kind: MediaKind
+    ): Map<Long, Set<Long>> {
+        val groupMembers = linkedMapOf<Long, MutableList<Long>>()
+        db.rawQuery(
+            """
+            SELECT g.id, i.asset_id
+            FROM similar_group g
+            JOIN similar_group_item i ON i.group_id = g.id
+            JOIN media_asset a ON a.id = i.asset_id
+            WHERE g.category = ?
+              AND g.type = ?
+              AND a.type = ?
+              AND a.state = 'ACTIVE'
+            ORDER BY g.id ASC
+            """.trimIndent(),
+            arrayOf(GroupCategory.SIMILAR.name, kind.name, kind.name)
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                groupMembers
+                    .getOrPut(cursor.getLong(0)) { mutableListOf() }
+                    .add(cursor.getLong(1))
+            }
+        }
+        if (groupMembers.isEmpty()) return emptyMap()
+
+        /*
+         * similar_group_item 只保存组成员，不保存具体边。这里把同组成员展开成候选邻接表，
+         * 后续仍会执行 dHash/colorHash 或视频多帧精判，因此不会因为展开候选而直接放大分组。
+         */
+        val candidates = mutableMapOf<Long, MutableSet<Long>>()
+        groupMembers.values.forEach { members ->
+            if (members.size < 2) return@forEach
+            members.forEach { assetId ->
+                val others = candidates.getOrPut(assetId) { linkedSetOf() }
+                members.forEach { otherId ->
+                    if (otherId != assetId) others += otherId
+                }
+            }
+        }
+        return candidates
     }
 
     private fun deleteSimilarGroups(db: SQLiteDatabase, kind: MediaKind) {
@@ -1233,6 +1304,13 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         )
     }
 
+    private fun insertGroupItem(statement: SQLiteStatement, groupId: Long, assetId: Long) {
+        statement.clearBindings()
+        statement.bindLong(1, groupId)
+        statement.bindLong(2, assetId)
+        statement.executeInsert()
+    }
+
     private fun loadGroupAssets(groupId: Long): List<MediaAsset> {
         return readableDatabase.rawQuery(
             """
@@ -1410,7 +1488,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          */
         private const val OTHER_GROUP_PREVIEW_LIMIT = 120
         /*
-         * v24 首次扫描阶段图片只写入轻量元数据质量分：
+         * v25 将图片扫描指纹输入从 512 统一压到 256，并让最终 Similar 分组重建
+         * 优先复用扫描阶段写入的候选关系。指纹输入尺寸变化会改变 dHash/colorHash
+         * 结果，因此必须提升 fingerprint_algorithm_version，避免新旧指纹混用。
+         *
+         * 历史优化：
          * 1. 全量扫描只校验 MediaStore 完整性，不再强制重算未变化资源的指纹。
          * 2. 候选召回和分组重建只使用当前算法版本的 fingerprint，避免旧结果混入。
          * 3. 视频候选先按时长桶、宽高比桶收窄，再进入多帧精判。
@@ -1419,9 +1501,9 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
          * 7. 完整清晰度/曝光质量分不再阻塞首次扫描主链路。
          */
-        private const val DB_VERSION = 24
+        private const val DB_VERSION = 25
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
-        private const val FINGERPRINT_ALGORITHM_VERSION = 24
+        private const val FINGERPRINT_ALGORITHM_VERSION = 25
         private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
         private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 

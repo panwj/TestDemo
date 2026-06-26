@@ -37,7 +37,10 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
 
     fun loadFingerprintBitmapWithSource(asset: MediaAsset, thumbSize: Int = 1024): FingerprintBitmap? {
         legacyImageThumbnail(asset)?.let {
-            return FingerprintBitmap(it, FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL)
+            return FingerprintBitmap(
+                normalizeFingerprintBitmap(it, thumbSize),
+                FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL
+            )
         }
         if (Build.VERSION.SDK_INT >= 29) {
             val competitorUri = ContentUris.withAppendedId(
@@ -46,10 +49,13 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
             )
             try {
                 return FingerprintBitmap(
-                    resolver.loadThumbnail(
-                    competitorUri,
-                    Size(thumbSize, thumbSize),
-                    null
+                    normalizeFingerprintBitmap(
+                        resolver.loadThumbnail(
+                            competitorUri,
+                            Size(thumbSize, thumbSize),
+                            null
+                        ),
+                        thumbSize
                     ),
                     FingerprintBitmapSource.SYSTEM_LOAD_THUMBNAIL
                 )
@@ -58,7 +64,7 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
             }
         }
         decodeSampledBitmap(asset.uri, thumbSize)?.let {
-            return FingerprintBitmap(it, FingerprintBitmapSource.DECODE_URI)
+            return FingerprintBitmap(normalizeFingerprintBitmap(it, thumbSize), FingerprintBitmapSource.DECODE_URI)
         }
 
         /*
@@ -67,7 +73,7 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
          */
         val path = pathFromUri(asset.uri) ?: return null
         return decodeSampledBitmap(path, thumbSize)?.let {
-            FingerprintBitmap(it, FingerprintBitmapSource.DECODE_FILE)
+            FingerprintBitmap(normalizeFingerprintBitmap(it, thumbSize), FingerprintBitmapSource.DECODE_FILE)
         }
     }
 
@@ -185,6 +191,26 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * 指纹计算不需要原始系统缩略图尺寸。这里把所有来源统一压到固定上限：
+     * 1. dHash/colorHash 的输入稳定，避免不同来源尺寸差异影响耗时；
+     * 2. 释放被替换的大图，减少 9k+ 资源全量扫描时的 Native Bitmap 压力；
+     * 3. 使用等比缩放，不拉伸宽高比例，降低对相似判断结果的影响。
+     */
+    private fun normalizeFingerprintBitmap(bitmap: Bitmap, targetSize: Int): Bitmap {
+        val maxSide = max(bitmap.width, bitmap.height)
+        if (maxSide <= targetSize || maxSide <= 0) return bitmap
+
+        val scale = targetSize.toFloat() / maxSide.toFloat()
+        val targetWidth = max(1, (bitmap.width * scale).toInt())
+        val targetHeight = max(1, (bitmap.height * scale).toInt())
+        val scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+        if (scaled !== bitmap && !bitmap.isRecycled) {
+            bitmap.recycle()
+        }
+        return scaled
     }
 
     private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {

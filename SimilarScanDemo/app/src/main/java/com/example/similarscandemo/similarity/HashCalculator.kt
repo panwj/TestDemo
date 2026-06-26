@@ -1,6 +1,7 @@
 package com.example.similarscandemo.similarity
 
 import android.graphics.Bitmap
+import android.os.Build
 
 /**
  * 计算图片组合指纹。
@@ -22,10 +23,15 @@ object HashCalculator {
      * 除数使用像素数 / 16，与竞品反编译实现保持一致。
      */
     private fun colorHash(source: Bitmap): Array<DoubleArray> {
-        val bitmap = if (source.config == Bitmap.Config.ARGB_8888) {
-            source
-        } else {
+        /*
+         * Bitmap.getPixels() 会统一返回 ARGB int，不需要为了 RGB_565/硬件图等输入
+         * 额外 copy 成 ARGB_8888。全量扫描 9k 图片时，这个拷贝会放大 Native 内存
+         * 分配和 GC 压力；直接读取像素即可保持算法结果一致。
+         */
+        val bitmap = if (Build.VERSION.SDK_INT >= 26 && source.config == Bitmap.Config.HARDWARE) {
             source.copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            source
         }
         val pixels = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)

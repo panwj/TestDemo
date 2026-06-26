@@ -357,10 +357,11 @@ class SimilarMediaScanner(context: Context) {
         private const val BATCH_SIZE = 500
         private const val MAX_GROUPS_TO_SHOW = Int.MAX_VALUE
         /*
-         * dHash 最终只需要 9x8 采样，colorHash 是 8x3 颜色直方图；扫描阶段使用 512
-         * 缩略图可以显著降低 MediaProvider/Bitmap 解码成本。UI 预览仍使用 1024。
+         * dHash 最终只需要 9x8 采样，colorHash 是 8x3 颜色直方图。真机 9k 图片测试中，
+         * MediaStore 缩略图读取是最大耗时点，因此扫描指纹统一压到 256：既保留足够颜色/
+         * 结构信息，又减少系统缩略图解码、缩放、像素遍历和 GC 压力。UI 预览仍使用 1024。
          */
-        private const val FINGERPRINT_BITMAP_SIZE = 512
+        private const val FINGERPRINT_BITMAP_SIZE = 256
     }
 }
 
