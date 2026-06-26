@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.provider.MediaStore
+import android.util.Size
 import com.example.similarscandemo.model.MediaAsset
 import java.io.File
 
@@ -13,14 +14,24 @@ import java.io.File
  *
  * 竞品 ExtractionRule 为：最小间隔 2、最大间隔 10、常规 7 帧、最多 13 帧。
  *
- * 真机验证表明，两阶段 quick/full 方案会漏掉真实相似视频，而且命中后补完整指纹
- * 反而让总耗时上升。因此当前恢复为单阶段 7 帧稳定路径：
- * 首帧、尾帧和中间等距帧覆盖完整时间轴，召回质量明显优于 3 帧 quick 预筛。
+ * 当前产品策略优先复用系统视频缩略图；如果系统缩略图不可用，再回退到
+ * 7 帧 MMR 抽帧，保证覆盖没有缓存的资源。
  */
 class VideoFingerprintCalculator(context: Context) {
     private val appContext = context.applicationContext
 
     fun calculate(asset: MediaAsset): VideoFingerprint {
+        systemVideoThumbnail(asset)?.let { thumbnail ->
+            return try {
+                VideoFingerprint(
+                    frames = listOf(HashCalculator.buildHash(thumbnail)),
+                    qualityScore = MediaQualityAnalyzer.metadataScore(asset)
+                )
+            } finally {
+                thumbnail.recycle()
+            }
+        }
+
         val path = mediaPath(asset) ?: return invalidFingerprint()
         val file = File(path)
         if (!file.exists() || !file.canRead()) return invalidFingerprint()
@@ -56,11 +67,46 @@ class VideoFingerprintCalculator(context: Context) {
                     }
                 }
             }
-            VideoFingerprint(hashes.ifEmpty { listOf(INVALID_HASH) }, qualityScore)
+            VideoFingerprint(
+                frames = hashes.ifEmpty { listOf(INVALID_HASH) },
+                qualityScore = qualityScore
+            )
         } catch (_: RuntimeException) {
             invalidFingerprint()
         } finally {
             runCatching { retriever.release() }
+        }
+    }
+
+    /**
+     * 优先读取系统维护的视频缩略图。
+     *
+     * API 29+ 使用 ContentResolver.loadThumbnail；API 23-28 使用旧版
+     * MediaStore.Video.Thumbnails。两者都可能命中系统/相册预热缓存，明显快于逐视频
+     * MediaMetadataRetriever 多帧抽取。
+     */
+    private fun systemVideoThumbnail(asset: MediaAsset): Bitmap? {
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                return appContext.contentResolver.loadThumbnail(
+                    asset.uri,
+                    Size(SYSTEM_THUMBNAIL_SIZE, SYSTEM_THUMBNAIL_SIZE),
+                    null
+                )
+            } catch (_: Exception) {
+                // 系统没有缩略图或权限受限时继续尝试旧接口/自抽帧。
+            }
+        }
+        return try {
+            @Suppress("DEPRECATION")
+            MediaStore.Video.Thumbnails.getThumbnail(
+                appContext.contentResolver,
+                asset.id,
+                MediaStore.Video.Thumbnails.MINI_KIND,
+                null
+            )
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -154,6 +200,7 @@ class VideoFingerprintCalculator(context: Context) {
     private companion object {
         const val NORMAL_FRAME_COUNT = 7
         const val MICROSECONDS_PER_MILLISECOND = 1_000.0
+        const val SYSTEM_THUMBNAIL_SIZE = 512
         const val HASH_WIDTH = 9
         const val HASH_HEIGHT = 8
         val INVALID_HASH = CombinedHash(-1L, emptyArray())

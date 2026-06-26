@@ -26,33 +26,49 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
      * 加载用于生成扫描指纹的 Bitmap。
      *
      * 该方法只服务图片和截图。视频使用独立的 MediaMetadataRetriever 多帧流程。
-     * 竞品先通过 Images URI 请求 1024x1024 缩略图，再依次尝试 input stream 和
-     * DATA 文件路径；Demo 保持相同顺序。
+     * 当前产品策略是“系统缩略图优先”：
+     * 1. 先读 MediaStore.Images.Thumbnails，尽量复用系统相册/竞品预热后的缩略图缓存；
+     * 2. 再读 API 29+ 的 ContentResolver.loadThumbnail；
+     * 3. 最后才自行通过 uri 或 DATA 路径 decode。
      */
     fun loadFingerprintBitmap(asset: MediaAsset, thumbSize: Int = 1024): Bitmap? {
+        return loadFingerprintBitmapWithSource(asset, thumbSize)?.bitmap
+    }
+
+    fun loadFingerprintBitmapWithSource(asset: MediaAsset, thumbSize: Int = 1024): FingerprintBitmap? {
+        legacyImageThumbnail(asset)?.let {
+            return FingerprintBitmap(it, FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL)
+        }
         if (Build.VERSION.SDK_INT >= 29) {
             val competitorUri = ContentUris.withAppendedId(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 asset.id
             )
             try {
-                return resolver.loadThumbnail(
+                return FingerprintBitmap(
+                    resolver.loadThumbnail(
                     competitorUri,
                     Size(thumbSize, thumbSize),
                     null
+                    ),
+                    FingerprintBitmapSource.SYSTEM_LOAD_THUMBNAIL
                 )
             } catch (_: Exception) {
                 // 当前 MediaProvider 不支持竞品的跨集合 URI，继续使用标准加载路径。
             }
         }
-        decodeSampledBitmap(asset.uri, thumbSize)?.let { return it }
+        decodeSampledBitmap(asset.uri, thumbSize)?.let {
+            return FingerprintBitmap(it, FingerprintBitmapSource.DECODE_URI)
+        }
 
         /*
          * 对齐竞品最后一层 fallback：ContentResolver 解码失败后，继续尝试 DATA
          * 真实路径。部分厂商 MediaProvider 或本地迁移资源只能通过文件路径读取。
          */
         val path = pathFromUri(asset.uri) ?: return null
-        return decodeSampledBitmap(path, thumbSize)
+        return decodeSampledBitmap(path, thumbSize)?.let {
+            FingerprintBitmap(it, FingerprintBitmapSource.DECODE_FILE)
+        }
     }
 
     fun loadBitmap(asset: MediaAsset, thumbSize: Int = 1024): Bitmap? {
@@ -87,6 +103,20 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
                 resolver,
                 asset.id,
                 MediaStore.Video.Thumbnails.MINI_KIND,
+                null
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun legacyImageThumbnail(asset: MediaAsset): Bitmap? {
+        return try {
+            @Suppress("DEPRECATION")
+            MediaStore.Images.Thumbnails.getThumbnail(
+                resolver,
+                asset.id,
+                MediaStore.Images.Thumbnails.MINI_KIND,
                 null
             )
         } catch (_: Exception) {
@@ -177,4 +207,16 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
             if (cursor.moveToFirst()) cursor.string(MediaStore.MediaColumns.DATA) else null
         }
     }
+}
+
+data class FingerprintBitmap(
+    val bitmap: Bitmap,
+    val source: FingerprintBitmapSource
+)
+
+enum class FingerprintBitmapSource {
+    SYSTEM_MEDIASTORE_THUMBNAIL,
+    SYSTEM_LOAD_THUMBNAIL,
+    DECODE_URI,
+    DECODE_FILE
 }

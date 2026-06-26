@@ -1386,16 +1386,17 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          */
         private const val OTHER_GROUP_PREVIEW_LIMIT = 120
         /*
-         * v21 回退两阶段视频识别，恢复单阶段 7 帧稳定召回：
+         * v23 图片也优先使用 MediaStore 系统缩略图，失败再 loadThumbnail/decode：
          * 1. 全量扫描只校验 MediaStore 完整性，不再强制重算未变化资源的指纹。
          * 2. 候选召回和分组重建只使用当前算法版本的 fingerprint，避免旧结果混入。
          * 3. 视频候选先按时长桶、宽高比桶收窄，再进入多帧精判。
          * 4. 新增索引降低 duplicateReference、视频候选召回和分组阶段的 SQL 成本。
-         * 5. quick/full 方案在真机数据中漏召回，不能作为默认产品路径。
+         * 5. 系统视频缩略图命中时保存单帧指纹，未命中时使用 MMR 7 帧兜底。
+         * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
          */
-        private const val DB_VERSION = 21
+        private const val DB_VERSION = 23
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
-        private const val FINGERPRINT_ALGORITHM_VERSION = 21
+        private const val FINGERPRINT_ALGORITHM_VERSION = 23
         private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
         private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 

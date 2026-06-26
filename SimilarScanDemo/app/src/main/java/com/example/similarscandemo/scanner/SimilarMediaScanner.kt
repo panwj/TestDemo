@@ -281,8 +281,14 @@ class SimilarMediaScanner(context: Context) {
             videoFingerprintCalculator.calculate(asset)
         }
         if (!fingerprint.isValid()) {
+            metrics.increment("video_fingerprint_failed")
             database.markFingerprintFailed(token)
             return
+        }
+        if (fingerprint.frames.size == 1) {
+            metrics.increment("video_system_thumbnail_fingerprint")
+        } else {
+            metrics.increment("video_mmr_fingerprint")
         }
 
         val similarCandidates = metrics.measure("load_and_filter_video_candidates") {
@@ -304,9 +310,18 @@ class SimilarMediaScanner(context: Context) {
 
     private fun buildVisualFingerprint(asset: MediaAsset, metrics: ScanMetrics): VisualFingerprintResult? {
         // 指纹输入走竞品兼容加载；UI 预览仍通过 loadBitmap() 使用真实媒体 URI。
-        val bitmap = metrics.measure("load_fingerprint_bitmap") {
-            bitmapLoader.loadFingerprintBitmap(asset, FINGERPRINT_BITMAP_SIZE)
+        val fingerprintBitmap = metrics.measure("load_fingerprint_bitmap") {
+            bitmapLoader.loadFingerprintBitmapWithSource(asset, FINGERPRINT_BITMAP_SIZE)
         } ?: return null
+        metrics.increment(
+            when (fingerprintBitmap.source) {
+                FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL -> "image_system_mediastore_thumbnail"
+                FingerprintBitmapSource.SYSTEM_LOAD_THUMBNAIL -> "image_system_load_thumbnail"
+                FingerprintBitmapSource.DECODE_URI -> "image_decode_uri"
+                FingerprintBitmapSource.DECODE_FILE -> "image_decode_file"
+            }
+        )
+        val bitmap = fingerprintBitmap.bitmap
         return try {
             VisualFingerprintResult(
                 hash = metrics.measure("calculate_image_hash") { HashCalculator.buildHash(bitmap) },
@@ -350,6 +365,7 @@ private data class VisualFingerprintResult(
 
 private class ScanMetrics {
     private val totals = linkedMapOf<String, Long>()
+    private val counts = linkedMapOf<String, Int>()
 
     fun <T> measure(name: String, block: () -> T): T {
         val startedAt = System.nanoTime()
@@ -374,10 +390,17 @@ private class ScanMetrics {
         totals.forEach { (name, duration) ->
             Log.d(TAG, "metric.$name=${duration}ms")
         }
+        counts.forEach { (name, count) ->
+            Log.d(TAG, "count.$name=$count")
+        }
     }
 
     private fun add(name: String, durationMs: Long) {
         totals[name] = (totals[name] ?: 0L) + durationMs
+    }
+
+    fun increment(name: String) {
+        counts[name] = (counts[name] ?: 0) + 1
     }
 
     companion object {

@@ -12,10 +12,25 @@ data class VideoFingerprint(
     val frames: List<CombinedHash>,
     val qualityScore: Double = 0.0
 ) {
-    fun isValid(): Boolean = frames.isNotEmpty()
+    fun isValid(): Boolean = frames.any(CombinedHash::isValid)
 
     fun isSimilarTo(other: VideoFingerprint, kind: MediaKind): Boolean {
         if (!isValid() || !other.isValid()) return false
+
+        /*
+         * 系统缩略图路径只会产生 1 帧指纹。此时不能继续要求“至少两帧命中”，
+         * 否则所有命中系统缩略图的视频都无法进入 Similar Videos。
+         *
+         * 单帧比较仍使用 VIDEO/SCREEN_RECORDING 的严格阈值，并且数据库候选已先按
+         * 类型、时长桶和宽高比桶收窄，避免普通照片阈值那种宽松合并。
+         */
+        val validFrames = frames.filter(CombinedHash::isValid)
+        val validOtherFrames = other.frames.filter(CombinedHash::isValid)
+        if (validFrames.size == 1 || validOtherFrames.size == 1) {
+            return validFrames.any { frame ->
+                validOtherFrames.any { candidate -> frame.isSimilarTo(candidate, kind) }
+            }
+        }
 
         /*
          * 竞品使用多帧匹配：遍历抽出的帧组合，只要有足够多的帧相似即判定视频相似。
