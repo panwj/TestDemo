@@ -24,10 +24,24 @@ import java.util.Locale
  * Demo 使用 SQLiteOpenHelper 保持依赖最少；正式项目可平滑替换为 Room。
  */
 class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
+    init {
+        /*
+         * 扫描服务会持续写库，详情页/首页会同时读库。WAL 允许读写并发，减少
+         * SQLiteDatabaseLockedException。它必须在数据库第一次打开前设置。
+         */
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         // 保证删除 media_asset/similar_group 时，关联指纹和组成员不会变成孤立数据。
         db.setForeignKeyConstraintsEnabled(true)
+        /*
+         * busy_timeout 属于会返回结果的 PRAGMA。部分 Android SQLite 版本不允许通过
+         * execSQL() 执行这类语句，会在数据库打开阶段抛出 SQLiteException，导致首页启动崩溃。
+         * 使用 rawQuery 后立即关闭 Cursor，可以兼容这些系统版本，同时保留等待写锁释放的能力。
+         */
+        db.rawQuery("PRAGMA busy_timeout=3000", null).close()
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -776,14 +790,16 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
     }
 
     /**
-     * 加载 BK-Tree 所需的最小索引数据。
+     * 加载图片 BK-Tree 和内存精判所需的索引数据。
      *
-     * 这里只读取数据库主键与 64 位 imageHash，不把 colorHash 和媒体对象常驻内存。
+     * 早期版本这里只读取 assetId/imageHash，BK-Tree 召回后还要回 SQLite 批量读取
+     * colorHash。真机 9k 图片下这部分约 18s。现在把 colorHash 一起放进内存索引：
+     * BK-Tree 仍负责全库近邻召回，最终 dHash+colorHash 精判直接在内存完成，不牺牲准确性。
      */
     fun loadHashIndex(kind: MediaKind): List<HashIndexEntry> {
         return readableDatabase.rawQuery(
             """
-            SELECT a.id, f.image_hash
+            SELECT a.id, f.image_hash, f.color_hash
             FROM fingerprint f
             JOIN media_asset a ON a.id = f.asset_id
             WHERE a.type = ?
@@ -795,7 +811,15 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
-                    add(HashIndexEntry(cursor.getLong(0), cursor.getLong(1)))
+                    add(
+                        HashIndexEntry(
+                            assetId = cursor.getLong(0),
+                            hash = CombinedHash(
+                                imageHash = cursor.getLong(1),
+                                colorHash = ColorHashCodec.decode(cursor.getString(2))
+                            )
+                        )
+                    )
                 }
             }
         }
@@ -1386,17 +1410,18 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          */
         private const val OTHER_GROUP_PREVIEW_LIMIT = 120
         /*
-         * v23 图片也优先使用 MediaStore 系统缩略图，失败再 loadThumbnail/decode：
+         * v24 首次扫描阶段图片只写入轻量元数据质量分：
          * 1. 全量扫描只校验 MediaStore 完整性，不再强制重算未变化资源的指纹。
          * 2. 候选召回和分组重建只使用当前算法版本的 fingerprint，避免旧结果混入。
          * 3. 视频候选先按时长桶、宽高比桶收窄，再进入多帧精判。
          * 4. 新增索引降低 duplicateReference、视频候选召回和分组阶段的 SQL 成本。
          * 5. 系统视频缩略图命中时保存单帧指纹，未命中时使用 MMR 7 帧兜底。
          * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
+         * 7. 完整清晰度/曝光质量分不再阻塞首次扫描主链路。
          */
-        private const val DB_VERSION = 23
+        private const val DB_VERSION = 24
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
-        private const val FINGERPRINT_ALGORITHM_VERSION = 23
+        private const val FINGERPRINT_ALGORITHM_VERSION = 24
         private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
         private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 
@@ -1421,8 +1446,11 @@ private data class AssetStats(
 
 data class HashIndexEntry(
     val assetId: Long,
+    val hash: CombinedHash
+) {
     val imageHash: Long
-)
+        get() = hash.imageHash
+}
 
 private data class AssetScanSnapshot(
     val state: String,

@@ -39,6 +39,7 @@ class SimilarMediaScanner(context: Context) {
     private val database = ScanDatabase(appContext)
     private val scanStateStore = ScanStateStore(appContext)
     private var visualIndexes: MutableMap<MediaKind, HammingBkTree> = mutableMapOf()
+    private var visualHashCache: MutableMap<MediaKind, MutableMap<Long, CombinedHash>> = mutableMapOf()
 
     fun scan(
         forceFull: Boolean = false,
@@ -235,16 +236,12 @@ class SimilarMediaScanner(context: Context) {
                     Threshold.maxCandidateDistance(asset.kind)
                 )
         }
-        val similarCandidates = metrics.measure("load_and_filter_visual_candidates") {
-            database.loadCandidatesByIds(candidateIds, token.assetId).filter { candidate ->
-            // Duplicates 和 Similar 互斥，避免首页重复统计同一资源。
-                if (candidate.assetId !in duplicateIds &&
-                    visual.hash.isSimilarTo(candidate.hash, asset.kind)
-                ) {
-                    true
-                } else {
-                    false
-                }
+        val similarCandidateIds = metrics.measure("filter_visual_candidates_in_memory") {
+            val cache = visualHashCache.getValue(asset.kind)
+            candidateIds.filter { candidateId ->
+                if (candidateId == token.assetId || candidateId in duplicateIds) return@filter false
+                val candidateHash = cache[candidateId] ?: return@filter false
+                visual.hash.isSimilarTo(candidateHash, asset.kind)
             }
         }
 
@@ -266,10 +263,11 @@ class SimilarMediaScanner(context: Context) {
         duplicateReferenceCandidates.forEach { candidate ->
             database.linkDuplicateAssets(asset.kind, token.assetId, candidate.assetId)
         }
-        similarCandidates.forEach { candidate ->
-            database.linkSimilarAssets(asset.kind, token.assetId, candidate.assetId)
+        similarCandidateIds.forEach { candidateId ->
+            database.linkSimilarAssets(asset.kind, token.assetId, candidateId)
         }
         visualIndexes.getValue(asset.kind).add(token.assetId, visual.hash.imageHash)
+        visualHashCache.getValue(asset.kind)[token.assetId] = visual.hash
     }
 
     private fun processVideo(token: AssetScanToken, asset: MediaAsset, metrics: ScanMetrics) {
@@ -326,7 +324,12 @@ class SimilarMediaScanner(context: Context) {
             VisualFingerprintResult(
                 hash = metrics.measure("calculate_image_hash") { HashCalculator.buildHash(bitmap) },
                 qualityScore = metrics.measure("calculate_quality_score") {
-                    MediaQualityAnalyzer.score(bitmap, asset)
+                    /*
+                     * 首次扫描阶段只写入轻量元数据质量分，避免 9010 张图片都做清晰度/
+                     * 曝光采样。相似/相同识别只依赖 dHash + colorHash，不依赖质量分；
+                     * 质量分仅用于 Best 排序，因此主链路先用分辨率、收藏、编辑状态兜底。
+                     */
+                    MediaQualityAnalyzer.metadataScore(asset)
                 }
             )
         } finally {
@@ -340,9 +343,12 @@ class SimilarMediaScanner(context: Context) {
      * 已缓存资源立即参与本轮增量匹配；新资源完成指纹后也会实时加入该索引。
      */
     private fun buildVisualIndex(kind: MediaKind): HammingBkTree {
+        val cache = mutableMapOf<Long, CombinedHash>()
+        visualHashCache[kind] = cache
         return HammingBkTree().also { tree ->
             database.loadHashIndex(kind).forEach { entry ->
                 tree.add(entry.assetId, entry.imageHash)
+                cache[entry.assetId] = entry.hash
             }
         }
     }

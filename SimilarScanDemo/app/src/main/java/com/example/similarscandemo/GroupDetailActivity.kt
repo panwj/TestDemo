@@ -7,9 +7,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.database.sqlite.SQLiteDatabaseLockedException
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.view.View
 import android.widget.Button
@@ -29,6 +32,8 @@ import com.example.similarscandemo.ui.GroupAdapter
 import com.example.similarscandemo.ui.GridAdapter
 import com.example.similarscandemo.util.FormatUtils
 import com.example.similarscandemo.util.DeleteOperationStore
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 竞品同构分类详情。
@@ -54,6 +59,9 @@ class GroupDetailActivity : Activity() {
     private var selectionInitialized = false
     private var receiverRegistered = false
     private var gridLayoutInitialized = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val reloadExecutor = Executors.newSingleThreadExecutor()
+    private val reloadGeneration = AtomicInteger(0)
     private val scanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == MediaScanService.ACTION_PROGRESS ||
@@ -93,6 +101,8 @@ class GroupDetailActivity : Activity() {
         sortButton.setOnClickListener { showSortDialog() }
         sortButton.text = sortMode.shortLabel
         deleteButton.setOnClickListener { requestDeleteSelected() }
+        deleteButton.isEnabled = false
+        deleteButton.alpha = 0.45f
         reloadLatestCategory()
     }
 
@@ -114,6 +124,14 @@ class GroupDetailActivity : Activity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        reloadGeneration.incrementAndGet()
+        reloadExecutor.shutdownNow()
+        scanner.close()
+        database.close()
+        super.onDestroy()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putStringArrayList(
             STATE_PENDING_DELETE_URIS,
@@ -129,8 +147,36 @@ class GroupDetailActivity : Activity() {
      * 改变用户正在进行的选择；首次进入时才应用竞品默认“保留 Best、选中其余项”。
      */
     private fun reloadLatestCategory() {
-        category = ProductCategoryBuilder.build(scanner.loadCachedGroups())
-            .first { it.type == categoryType }
+        val generation = reloadGeneration.incrementAndGet()
+        reloadExecutor.execute {
+            val latestCategory = loadLatestCategoryWithRetry() ?: return@execute
+
+            mainHandler.post {
+                if (generation != reloadGeneration.get() || isFinishing || isDestroyed) return@post
+                applyLatestCategory(latestCategory)
+            }
+        }
+    }
+
+    private fun loadLatestCategoryWithRetry(): ProductCategory? {
+        repeat(DB_READ_RETRY_COUNT) { attempt ->
+            try {
+                return ProductCategoryBuilder.build(scanner.loadCachedGroups())
+                    .first { it.type == categoryType }
+            } catch (_: SQLiteDatabaseLockedException) {
+                Thread.sleep(DB_READ_RETRY_DELAY_MS * (attempt + 1))
+            } catch (_: IllegalStateException) {
+                Thread.sleep(DB_READ_RETRY_DELAY_MS * (attempt + 1))
+            }
+        }
+        return runCatching {
+            ProductCategoryBuilder.build(scanner.loadCachedGroups())
+                .first { it.type == categoryType }
+        }.getOrNull()
+    }
+
+    private fun applyLatestCategory(latestCategory: ProductCategory) {
+        category = latestCategory
         val activeUris = category.assets.mapTo(hashSetOf()) { it.uri.toString() }
         selectedUris.retainAll(activeUris)
         bestUris.clear()
@@ -228,6 +274,7 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun showSortDialog() {
+        if (!::category.isInitialized) return
         val modes = SortMode.entries
         AlertDialog.Builder(this)
             .setTitle("Sort media")
@@ -320,6 +367,7 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun toggleSelectAll() {
+        if (!::category.isInitialized) return
         val allUris = category.assets.map { it.uri.toString() }
         if (selectedUris.size == allUris.size) selectedUris.clear()
         else selectedUris.addAll(allUris)
@@ -327,6 +375,7 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun updateSelectionControls() {
+        if (!::category.isInitialized) return
         val selectedAssets = category.assets.filter { selectedUris.contains(it.uri.toString()) }
         val selectedSize = selectedAssets.sumOf { it.size }
         selectAllButton.text =
@@ -345,6 +394,7 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun requestDeleteSelected() {
+        if (!::category.isInitialized) return
         val marked = database.markDeletePending(selectedUris)
         pendingDeleteUris.clear()
         pendingDeleteUris.addAll(marked)
@@ -438,6 +488,8 @@ class GroupDetailActivity : Activity() {
         const val EXTRA_CATEGORY_TYPE = "extra_category_type"
         private const val DELETE_REQUEST_CODE = 2002
         private const val STATE_PENDING_DELETE_URIS = "pending_delete_uris"
+        private const val DB_READ_RETRY_COUNT = 5
+        private const val DB_READ_RETRY_DELAY_MS = 80L
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
