@@ -20,14 +20,13 @@ import android.widget.TextView
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.example.similarscandemo.database.ScanDatabase
-import com.example.similarscandemo.model.MediaAsset
-import com.example.similarscandemo.model.ProductCategory
-import com.example.similarscandemo.model.ProductCategoryType
-import com.example.similarscandemo.model.SimilarGroup
-import com.example.similarscandemo.scanner.ProductCategoryBuilder
-import com.example.similarscandemo.scanner.SimilarMediaScanner
+import com.clean.similarscan.api.model.MediaAsset
+import com.clean.similarscan.api.model.ProductCategory
+import com.clean.similarscan.api.model.ProductCategoryType
+import com.clean.similarscan.api.model.SimilarGroup
 import com.example.similarscandemo.service.MediaScanService
+import com.clean.similarscan.api.SimilarScanClient
+import com.clean.similarscan.api.SimilarScanSdk
 import com.example.similarscandemo.ui.GroupAdapter
 import com.example.similarscandemo.ui.GridAdapter
 import com.example.similarscandemo.util.FormatUtils
@@ -44,8 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class GroupDetailActivity : Activity() {
     private lateinit var category: ProductCategory
     private lateinit var categoryType: ProductCategoryType
-    private lateinit var scanner: SimilarMediaScanner
-    private lateinit var database: ScanDatabase
+    private lateinit var scanClient: SimilarScanClient
     private lateinit var groupRecycler: RecyclerView
     private lateinit var selectAllButton: TextView
     private lateinit var sortButton: TextView
@@ -82,8 +80,7 @@ class GroupDetailActivity : Activity() {
             finish()
             return
         }
-        scanner = SimilarMediaScanner(this)
-        database = ScanDatabase(applicationContext)
+        scanClient = SimilarScanSdk.create(applicationContext)
         pendingDeleteUris.addAll(
             savedInstanceState?.getStringArrayList(STATE_PENDING_DELETE_URIS).orEmpty()
         )
@@ -127,8 +124,9 @@ class GroupDetailActivity : Activity() {
     override fun onDestroy() {
         reloadGeneration.incrementAndGet()
         reloadExecutor.shutdownNow()
-        scanner.close()
-        database.close()
+        if (::scanClient.isInitialized) {
+            scanClient.close()
+        }
         super.onDestroy()
     }
 
@@ -161,7 +159,7 @@ class GroupDetailActivity : Activity() {
     private fun loadLatestCategoryWithRetry(): ProductCategory? {
         repeat(DB_READ_RETRY_COUNT) { attempt ->
             try {
-                return ProductCategoryBuilder.build(scanner.loadCachedGroups())
+                return scanClient.loadProductCategories()
                     .first { it.type == categoryType }
             } catch (_: SQLiteDatabaseLockedException) {
                 Thread.sleep(DB_READ_RETRY_DELAY_MS * (attempt + 1))
@@ -170,7 +168,7 @@ class GroupDetailActivity : Activity() {
             }
         }
         return runCatching {
-            ProductCategoryBuilder.build(scanner.loadCachedGroups())
+            scanClient.loadProductCategories()
                 .first { it.type == categoryType }
         }.getOrNull()
     }
@@ -256,8 +254,8 @@ class GroupDetailActivity : Activity() {
                             id = 0,
                             title = categoryType.title,
                             subtitle = "",
-                            category = com.example.similarscandemo.model.GroupCategory.SIMILAR,
-                            kind = com.example.similarscandemo.model.MediaKind.PHOTO,
+                            category = com.clean.similarscan.api.model.GroupCategory.SIMILAR,
+                            kind = com.clean.similarscan.api.model.MediaKind.PHOTO,
                             assets = sortedAssets
                         )
                         openPreview(tempGroup, sortedAssets.indexOf(asset))
@@ -395,7 +393,7 @@ class GroupDetailActivity : Activity() {
 
     private fun requestDeleteSelected() {
         if (!::category.isInitialized) return
-        val marked = database.markDeletePending(selectedUris)
+        val marked = scanClient.markDeletePending(selectedUris)
         pendingDeleteUris.clear()
         pendingDeleteUris.addAll(marked)
         val uris = pendingDeleteUris.map(Uri::parse)
@@ -434,7 +432,7 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun completeDeletion() {
-        database.finalizeDelete(pendingDeleteUris)
+        scanClient.finalizeDelete(pendingDeleteUris)
         DeleteOperationStore.finish(this)
         selectedUris.removeAll(pendingDeleteUris)
         pendingDeleteUris.clear()
@@ -443,7 +441,7 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun cancelDeletion() {
-        database.restoreDeletePending(pendingDeleteUris)
+        scanClient.restoreDeletePending(pendingDeleteUris)
         DeleteOperationStore.finish(this)
         pendingDeleteUris.clear()
         reloadLatestCategory()
@@ -451,8 +449,8 @@ class GroupDetailActivity : Activity() {
 
     private fun openPreview(group: SimilarGroup, position: Int) {
         val asset = group.assets.getOrNull(position) ?: return
-        if (asset.kind == com.example.similarscandemo.model.MediaKind.VIDEO || 
-            asset.kind == com.example.similarscandemo.model.MediaKind.SCREEN_RECORDING) {
+        if (asset.kind == com.clean.similarscan.api.model.MediaKind.VIDEO || 
+            asset.kind == com.clean.similarscan.api.model.MediaKind.SCREEN_RECORDING) {
             playVideo(asset.uri)
         } else {
             startActivity(
@@ -477,8 +475,8 @@ class GroupDetailActivity : Activity() {
             id = 0,
             title = categoryType.title,
             subtitle = "",
-            category = com.example.similarscandemo.model.GroupCategory.SIMILAR,
-            kind = com.example.similarscandemo.model.MediaKind.PHOTO,
+            category = com.clean.similarscan.api.model.GroupCategory.SIMILAR,
+            kind = com.clean.similarscan.api.model.MediaKind.PHOTO,
             assets = assets
         )
         openPreview(tempGroup, position)

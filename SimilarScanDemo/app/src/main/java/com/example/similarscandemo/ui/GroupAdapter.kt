@@ -11,8 +11,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.example.similarscandemo.R
-import com.example.similarscandemo.model.MediaAsset
-import com.example.similarscandemo.model.SimilarGroup
+import com.clean.similarscan.api.model.MediaAsset
+import com.clean.similarscan.api.model.SimilarGroup
 import com.example.similarscandemo.util.FormatUtils
 
 class GroupAdapter(
@@ -145,8 +145,8 @@ class ThumbAdapter(
 
         fun bind(asset: MediaAsset, position: Int) {
             val badgeText = when (asset.kind) {
-                com.example.similarscandemo.model.MediaKind.VIDEO, 
-                com.example.similarscandemo.model.MediaKind.SCREEN_RECORDING -> "VIDEO"
+                com.clean.similarscan.api.model.MediaKind.VIDEO, 
+                com.clean.similarscan.api.model.MediaKind.SCREEN_RECORDING -> "VIDEO"
                 else -> ""
             }
             badge.text = badgeText

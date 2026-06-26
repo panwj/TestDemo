@@ -11,8 +11,8 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.example.similarscandemo.R
-import com.example.similarscandemo.model.MediaAsset
-import com.example.similarscandemo.model.MediaKind
+import com.clean.similarscan.api.model.MediaAsset
+import com.clean.similarscan.api.model.MediaKind
 
 class GridAdapter(
     private val activity: Activity,

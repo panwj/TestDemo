@@ -14,13 +14,11 @@ import android.view.View
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
-import com.example.similarscandemo.model.MediaAsset
-import com.example.similarscandemo.model.MediaKind
-import com.example.similarscandemo.model.ProductCategoryType
-import com.example.similarscandemo.scanner.MediaBitmapLoader
-import com.example.similarscandemo.scanner.ProductCategoryBuilder
-import com.example.similarscandemo.scanner.SimilarMediaScanner
+import com.clean.similarscan.api.model.MediaAsset
+import com.clean.similarscan.api.model.ProductCategoryType
 import com.example.similarscandemo.service.MediaScanService
+import com.clean.similarscan.api.SimilarScanClient
+import com.clean.similarscan.api.SimilarScanSdk
 import kotlin.math.abs
 
 /**
@@ -29,13 +27,12 @@ import kotlin.math.abs
  * 支持按钮和左右滑动两种方式切换上一张 / 下一张，便于在相似结果中快速确认。
  */
 class ImagePreviewActivity : Activity() {
-    private lateinit var loader: MediaBitmapLoader
+    private lateinit var scanClient: SimilarScanClient
     private lateinit var imageView: ImageView
     private lateinit var titleText: TextView
     private lateinit var counterText: TextView
     private lateinit var previousButton: ImageButton
     private lateinit var nextButton: ImageButton
-    private lateinit var scanner: SimilarMediaScanner
     private lateinit var categoryType: ProductCategoryType
     private var groupId: Long = 0L
     private var assets: List<MediaAsset> = emptyList()
@@ -57,8 +54,7 @@ class ImagePreviewActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_image_preview)
 
-        loader = MediaBitmapLoader(contentResolver)
-        scanner = SimilarMediaScanner(this)
+        scanClient = SimilarScanSdk.create(applicationContext)
         categoryType = runCatching {
             ProductCategoryType.valueOf(intent.getStringExtra(EXTRA_CATEGORY_TYPE).orEmpty())
         }.getOrNull() ?: run {
@@ -99,6 +95,13 @@ class ImagePreviewActivity : Activity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        if (::scanClient.isInitialized) {
+            scanClient.close()
+        }
+        super.onDestroy()
+    }
+
     private fun showOffset(offset: Int) {
         val nextPosition = position + offset
         if (nextPosition in assets.indices) {
@@ -114,7 +117,7 @@ class ImagePreviewActivity : Activity() {
      * 如果当前资源已被用户删除，优先停留在原位置附近；如果整组消失则安全关闭页面。
      */
     private fun reloadLatestAssets() {
-        val category = ProductCategoryBuilder.build(scanner.loadCachedGroups())
+        val category = scanClient.loadProductCategories()
             .first { it.type == categoryType }
         val group = if (groupId > 0L) {
             category.groups.firstOrNull { it.id == groupId }
@@ -149,7 +152,7 @@ class ImagePreviewActivity : Activity() {
 
         imageView.setBackgroundColor(Color.BLACK)
         imageView.setImageResource(android.R.color.transparent)
-        loader.loadBitmap(asset, 1800)?.let { imageView.setImageBitmap(it) }
+        scanClient.loadBitmap(asset, 1800)?.let { imageView.setImageBitmap(it) }
     }
 
     private fun handleSwipe(event: MotionEvent): Boolean {

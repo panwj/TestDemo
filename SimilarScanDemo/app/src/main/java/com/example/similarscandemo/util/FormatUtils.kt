@@ -2,6 +2,11 @@ package com.example.similarscandemo.util
 
 import java.util.Locale
 
+/**
+ * Demo UI 展示用格式化工具。
+ *
+ * SDK 内部也有自己的格式化实现用于生成默认 subtitle，但 app 页面不直接依赖 SDK internal 包。
+ */
 object FormatUtils {
     fun formatBytes(bytes: Long): String {
         if (bytes < 1024L) return "$bytes B"

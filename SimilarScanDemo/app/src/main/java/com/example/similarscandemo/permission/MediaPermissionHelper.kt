@@ -1,105 +1,36 @@
 package com.example.similarscandemo.permission
 
-import android.Manifest
 import android.app.Activity
 import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
+import com.clean.similarscan.permission.SimilarScanPermissionChecker
+import com.clean.similarscan.permission.MediaAccessLevel as SdkMediaAccessLevel
 
 /**
- * 媒体读取权限工具。
+ * Demo 层媒体权限申请工具。
  *
- * target 36 下需要兼容三段权限模型：
- * - Android 12 及以下：READ_EXTERNAL_STORAGE
- * - Android 13：READ_MEDIA_IMAGES / READ_MEDIA_VIDEO
- * - Android 14+：用户可只授予部分照片访问，因此额外请求 READ_MEDIA_VISUAL_USER_SELECTED
+ * SDK 只提供权限状态判断和 requiredPermissions；真正弹系统权限框必须留在宿主 App，
+ * 这样后续 SDK 接入其他产品时不会强制绑定 Activity 请求流程。
  */
 object MediaPermissionHelper {
     const val REQUEST_CODE = 1001
 
-    fun hasPermission(activity: Activity): Boolean {
-        return canReadImages(activity) || canReadVideos(activity)
+    fun hasPermission(context: Context): Boolean {
+        return SimilarScanPermissionChecker.hasPermission(context)
     }
 
-    fun hasFullVisualAccess(activity: Activity): Boolean {
-        return hasFullVisualAccess(activity as Context)
-    }
-
-    fun hasFullVisualAccess(context: Context): Boolean {
-        return when {
-            Build.VERSION.SDK_INT >= 33 ->
-                context.isGranted(Manifest.permission.READ_MEDIA_IMAGES) &&
-                    context.isGranted(Manifest.permission.READ_MEDIA_VIDEO)
-            else -> context.isGranted(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    }
-
-    fun accessLevel(activity: Activity): MediaAccessLevel {
-        return when {
-            Build.VERSION.SDK_INT >= 34 -> {
-                val hasImages = activity.isGranted(Manifest.permission.READ_MEDIA_IMAGES)
-                val hasVideo = activity.isGranted(Manifest.permission.READ_MEDIA_VIDEO)
-                val hasPartial = activity.isGranted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-                when {
-                    hasImages && hasVideo -> MediaAccessLevel.FULL_VISUAL
-                    hasPartial -> MediaAccessLevel.PARTIAL_VISUAL
-                    else -> MediaAccessLevel.NONE
-                }
-            }
-            Build.VERSION.SDK_INT >= 33 -> {
-                if (activity.isGranted(Manifest.permission.READ_MEDIA_IMAGES) &&
-                    activity.isGranted(Manifest.permission.READ_MEDIA_VIDEO)
-                ) {
-                    MediaAccessLevel.FULL_VISUAL
-                } else {
-                    MediaAccessLevel.NONE
-                }
-            }
-            activity.isGranted(Manifest.permission.READ_EXTERNAL_STORAGE) -> MediaAccessLevel.LEGACY_FULL
-            else -> MediaAccessLevel.NONE
-        }
-    }
-
-    fun canReadImages(context: Context): Boolean {
-        return when {
-            Build.VERSION.SDK_INT >= 34 ->
-                context.isGranted(Manifest.permission.READ_MEDIA_IMAGES) ||
-                    context.isGranted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-            Build.VERSION.SDK_INT >= 33 -> context.isGranted(Manifest.permission.READ_MEDIA_IMAGES)
-            else -> context.isGranted(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    }
-
-    fun canReadVideos(context: Context): Boolean {
-        return when {
-            Build.VERSION.SDK_INT >= 34 ->
-                context.isGranted(Manifest.permission.READ_MEDIA_VIDEO) ||
-                    context.isGranted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-            Build.VERSION.SDK_INT >= 33 -> context.isGranted(Manifest.permission.READ_MEDIA_VIDEO)
-            else -> context.isGranted(Manifest.permission.READ_EXTERNAL_STORAGE)
+    fun accessLevel(context: Context): MediaAccessLevel {
+        return when (SimilarScanPermissionChecker.accessLevel(context)) {
+            SdkMediaAccessLevel.NONE -> MediaAccessLevel.NONE
+            SdkMediaAccessLevel.PARTIAL_VISUAL -> MediaAccessLevel.PARTIAL_VISUAL
+            SdkMediaAccessLevel.FULL_VISUAL -> MediaAccessLevel.FULL_VISUAL
+            SdkMediaAccessLevel.LEGACY_FULL -> MediaAccessLevel.LEGACY_FULL
         }
     }
 
     fun request(activity: Activity) {
-        activity.requestPermissions(requiredPermissions(), REQUEST_CODE)
-    }
-
-    fun requiredPermissions(): Array<String> {
-        return when {
-            Build.VERSION.SDK_INT >= 34 -> arrayOf(
-                Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO,
-                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
-            )
-            Build.VERSION.SDK_INT >= 33 -> arrayOf(
-                Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO
-            )
-            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    }
-
-    private fun Context.isGranted(permission: String): Boolean {
-        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        activity.requestPermissions(
+            SimilarScanPermissionChecker.requiredPermissions(),
+            REQUEST_CODE
+        )
     }
 }

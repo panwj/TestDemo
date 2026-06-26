@@ -10,8 +10,8 @@ import android.widget.GridView
 import android.widget.TextView
 import com.example.similarscandemo.GroupDetailActivity
 import com.example.similarscandemo.R
-import com.example.similarscandemo.model.MediaKind
-import com.example.similarscandemo.model.ProductCategory
+import com.clean.similarscan.api.model.MediaKind
+import com.clean.similarscan.api.model.ProductCategory
 import com.example.similarscandemo.util.FormatUtils
 
 /**

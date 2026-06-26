@@ -7,7 +7,7 @@ import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.ImageView
 import com.example.similarscandemo.R
-import com.example.similarscandemo.model.MediaAsset
+import com.clean.similarscan.api.model.MediaAsset
 
 /**
  * 首页分类模块的三张大缩略图预览。

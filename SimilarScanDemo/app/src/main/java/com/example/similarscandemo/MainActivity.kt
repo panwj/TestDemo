@@ -17,13 +17,13 @@ import android.widget.Button
 import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
+import com.clean.similarscan.api.model.ProductCategory
 import com.example.similarscandemo.permission.MediaAccessLevel
 import com.example.similarscandemo.permission.MediaPermissionHelper
 import com.example.similarscandemo.permission.NotificationPermissionHelper
-import com.example.similarscandemo.database.ScanDatabase
-import com.example.similarscandemo.scanner.ProductCategoryBuilder
-import com.example.similarscandemo.scanner.SimilarMediaScanner
 import com.example.similarscandemo.service.MediaScanService
+import com.clean.similarscan.api.SimilarScanClient
+import com.clean.similarscan.api.SimilarScanSdk
 import com.example.similarscandemo.ui.ProductCategoryAdapter
 import com.example.similarscandemo.util.DeleteOperationStore
 import java.util.concurrent.Executors
@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 竞品同构首页：权限申请、扫描进度和纵向媒体分类。
  */
 class MainActivity : Activity() {
-    private lateinit var scanner: SimilarMediaScanner
+    private lateinit var scanClient: SimilarScanClient
     private lateinit var scanButton: Button
     private lateinit var progressBar: ProgressBar
     private lateinit var statusText: TextView
@@ -93,12 +93,12 @@ class MainActivity : Activity() {
         pendingScanAfterPermission = savedInstanceState?.getBoolean(STATE_PENDING_SCAN, false) ?: false
         notificationRequestInFlight = savedInstanceState?.getBoolean(STATE_NOTIFICATION_IN_FLIGHT, false) ?: false
         notificationPermissionHandled = savedInstanceState?.getBoolean(STATE_NOTIFICATION_HANDLED, false) ?: false
+        scanClient = SimilarScanSdk.create(applicationContext)
         if (savedInstanceState == null && DeleteOperationStore.shouldRecover(this)) {
             // 全新进入主页时恢复上次进程遗留的删除状态；Activity 重建时不干扰系统确认。
-            ScanDatabase(applicationContext).recoverStaleDeletePending()
+            scanClient.recoverStaleDeletePending()
             DeleteOperationStore.finish(this)
         }
-        scanner = SimilarMediaScanner(this)
         scanButton = findViewById(R.id.scanButton)
         progressBar = findViewById(R.id.progressBar)
         statusText = findViewById(R.id.statusText)
@@ -153,7 +153,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (::scanner.isInitialized) {
+        if (::scanClient.isInitialized) {
             if (pendingScanAfterPermission) {
                 startPendingScanIfReady()
             } else {
@@ -245,6 +245,9 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         renderGeneration.incrementAndGet()
         renderExecutor.shutdownNow()
+        if (::scanClient.isInitialized) {
+            scanClient.close()
+        }
         super.onDestroy()
     }
 
@@ -269,19 +272,18 @@ class MainActivity : Activity() {
         val generation = renderGeneration.incrementAndGet()
         renderExecutor.execute {
             if (generation != renderGeneration.get()) return@execute
-            val groups = scanner.loadCachedGroups()
-            val categories = ProductCategoryBuilder.build(groups)
+            val categories = scanClient.loadProductCategories()
             mainHandler.post {
                 if (generation != renderGeneration.get()) return@post
                 render(categories)
-                if (updateCachedSummary && groups.isNotEmpty() && !isScanning) {
+                if (updateCachedSummary && categories.any { it.itemCount > 0 } && !isScanning) {
                     summaryText.text = "Cached results are ready while a new scan can update them"
                 }
             }
         }
     }
 
-    private fun render(categories: List<com.example.similarscandemo.model.ProductCategory>) {
+    private fun render(categories: List<ProductCategory>) {
         val adapter = categoryAdapter
         if (adapter == null) {
             categoryAdapter = ProductCategoryAdapter(this, categories)

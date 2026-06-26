@@ -1,8 +1,9 @@
 package com.example.similarscandemo.ui
 
 import android.widget.ImageView
-import com.example.similarscandemo.model.MediaAsset
-import com.example.similarscandemo.scanner.MediaBitmapLoader
+import com.clean.similarscan.api.model.MediaAsset
+import com.clean.similarscan.api.SimilarScanImageLoader
+import com.clean.similarscan.api.SimilarScanSdk
 
 object ThumbLoader {
     private val loaders = mutableMapOf<Int, BitmapLoader>()
@@ -11,7 +12,7 @@ object ThumbLoader {
     @Synchronized
     fun loadBitmap(imageView: ImageView, asset: MediaAsset, size: Int) {
         val hashCode = imageView.hashCode()
-        val loader = loaders.getOrPut(hashCode) { BitmapLoader(imageView.context.contentResolver) }
+        val loader = loaders.getOrPut(hashCode) { BitmapLoader(imageView.context.applicationContext) }
         loader.loadBitmap(imageView, asset, size, forceRefresh)
     }
 
@@ -33,10 +34,10 @@ object ThumbLoader {
     }
 }
 
-class BitmapLoader(private val resolver: android.content.ContentResolver) {
+class BitmapLoader(private val context: android.content.Context) {
     private val cache = android.util.LruCache<String, android.graphics.Bitmap>(50)
     private val executor = java.util.concurrent.Executors.newFixedThreadPool(4)
-    private val mediaBitmapLoader = MediaBitmapLoader(resolver)
+    private var imageLoader: SimilarScanImageLoader? = null
 
     fun loadBitmap(imageView: ImageView, asset: MediaAsset, size: Int, forceRefresh: Boolean = false) {
         val key = "${asset.uri}_$size"
@@ -73,10 +74,9 @@ class BitmapLoader(private val resolver: android.content.ContentResolver) {
         return try {
             /*
              * UI 封面必须和系统相册、竞品保持一致，因此这里不再自行抽取“最佳帧”。
-             * 统一走 MediaBitmapLoader：API 29+ 使用 ContentResolver.loadThumbnail，
-             * API 23-28 优先使用 MediaStore 缩略图，失败后才回退文件解码。
+             * 统一走 SDK 暴露的图片加载接口，避免 app 层直接依赖 scanner 内部实现。
              */
-            val thumb = mediaBitmapLoader.loadBitmap(asset, size)
+            val thumb = imageLoader().loadBitmap(asset, size)
             thumb?.let {
                 val scale = size.toFloat() / it.width.coerceAtMost(it.height)
                 val newWidth = (it.width * scale).toInt()
@@ -90,9 +90,15 @@ class BitmapLoader(private val resolver: android.content.ContentResolver) {
 
     fun recycle() {
         cache.evictAll()
+        imageLoader?.close()
+        imageLoader = null
     }
 
     fun removeFromCache(key: String) {
         cache.remove(key)
+    }
+
+    private fun imageLoader(): SimilarScanImageLoader {
+        return imageLoader ?: SimilarScanSdk.createImageLoader(context).also { imageLoader = it }
     }
 }

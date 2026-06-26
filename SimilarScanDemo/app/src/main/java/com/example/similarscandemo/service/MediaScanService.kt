@@ -9,7 +9,9 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import com.example.similarscandemo.MainActivity
-import com.example.similarscandemo.scanner.SimilarMediaScanner
+import com.clean.similarscan.api.SimilarScanObserver
+import com.clean.similarscan.api.SimilarScanRequest
+import com.clean.similarscan.api.SimilarScanSdk
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -35,18 +37,21 @@ class MediaScanService : Service() {
 
         val forceFull = intent?.getBooleanExtra(EXTRA_FORCE_FULL, false) == true
         executor.execute {
-            val scanner = SimilarMediaScanner(applicationContext)
+            val scanClient = SimilarScanSdk.create(applicationContext)
             try {
                 runCatching {
-                    scanner.scan(forceFull) { progress ->
-                        updateNotification(progress.message, progress.processedCount)
-                        sendProgress(
-                            ACTION_PROGRESS,
-                            progress.processedCount,
-                            progress.discoveredGroupCount,
-                            progress.message
-                        )
-                    }
+                    scanClient.scan(
+                        request = SimilarScanRequest(forceFull = forceFull),
+                        observer = SimilarScanObserver { progress ->
+                            updateNotification(progress.message, progress.processedCount)
+                            sendProgress(
+                                ACTION_PROGRESS,
+                                progress.processedCount,
+                                progress.discoveredGroupCount,
+                                progress.message
+                            )
+                        }
+                    )
                 }.onSuccess { result ->
                     sendProgress(ACTION_COMPLETE, result.assetCount, result.groups.size, result.message)
                 }.onFailure { error ->
@@ -58,8 +63,8 @@ class MediaScanService : Service() {
                     )
                 }
             } finally {
-                // SimilarMediaScanner 内部持有 SQLiteOpenHelper，服务扫描结束必须关闭连接。
-                scanner.close()
+                // SDK 内部持有 SQLiteOpenHelper，服务扫描结束必须关闭连接。
+                scanClient.close()
             }
             scanning.set(false)
             isRunning = false
