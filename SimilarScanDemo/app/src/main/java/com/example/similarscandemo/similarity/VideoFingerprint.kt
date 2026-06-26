@@ -19,16 +19,25 @@ data class VideoFingerprint(
 
         /*
          * 竞品使用多帧匹配：遍历抽出的帧组合，只要有足够多的帧相似即判定视频相似。
-         * 这里的 kind 决定每一帧使用普通视频还是录屏阈值，避免录屏误用普通视频参数。
+         * Demo 在保持“至少两帧命中”的口径上增加两个工程约束：
+         *
+         * 1. 每个候选帧只能被消费一次，避免 A 的多个静态帧都命中 B 的同一张黑屏/片头；
+         * 2. 命中的帧位置需要有一定间隔，避免只靠开头连续两帧相似就把整段视频合并。
+         *
+         * 这样不会降低正常重复录屏/重复视频的召回，但能减少“一个大组还能继续拆”的误合并。
+         * kind 决定每一帧使用普通视频还是录屏阈值，避免录屏误用普通照片参数。
          */
-        var matchedCount = 0
-        for (frame in frames) {
+        val usedCandidateIndexes = mutableSetOf<Int>()
+        val matchedFrameIndexes = mutableListOf<Int>()
+        for ((frameIndex, frame) in frames.withIndex()) {
             if (!frame.isValid()) continue
-            for (candidate in other.frames) {
+            for ((candidateIndex, candidate) in other.frames.withIndex()) {
+                if (candidateIndex in usedCandidateIndexes) continue
                 if (!candidate.isValid()) continue
                 if (frame.isSimilarTo(candidate, kind)) {
-                    matchedCount++
-                    if (matchedCount >= MIN_MATCHED_FRAME_COUNT) return true
+                    usedCandidateIndexes += candidateIndex
+                    matchedFrameIndexes += frameIndex
+                    if (hasEnoughSeparatedMatches(matchedFrameIndexes)) return true
                     break
                 }
             }
@@ -36,7 +45,14 @@ data class VideoFingerprint(
         return false
     }
 
+    private fun hasEnoughSeparatedMatches(indexes: List<Int>): Boolean {
+        if (indexes.size < MIN_MATCHED_FRAME_COUNT) return false
+        val first = indexes.first()
+        return indexes.any { kotlin.math.abs(it - first) >= MIN_MATCHED_FRAME_GAP }
+    }
+
     private companion object {
         const val MIN_MATCHED_FRAME_COUNT = 2
+        const val MIN_MATCHED_FRAME_GAP = 2
     }
 }

@@ -3,6 +3,7 @@ package com.example.similarscandemo.scanner
 import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
+import android.util.Log
 import com.example.similarscandemo.database.ScanDatabase
 import com.example.similarscandemo.database.AssetScanToken
 import com.example.similarscandemo.model.MediaAsset
@@ -60,8 +61,11 @@ class SimilarMediaScanner(context: Context) {
         val videoGenerationAfter = if (fullScan) 0L else checkpoint.videoGeneration
         var maxImageGeneration = checkpoint.imageGeneration
         var maxVideoGeneration = checkpoint.videoGeneration
-        var processed = 0
-        val processedKinds = linkedSetOf<MediaKind>()
+        var visited = 0
+        var fingerprinted = 0
+        var skippedUnchanged = 0
+        val changedKinds = linkedSetOf<MediaKind>()
+        val metrics = ScanMetrics()
 
         // 每次扫描从当前数据库指纹构建轻量 BK-Tree，确保图片候选按汉明距离完整召回。
         visualIndexes = mutableMapOf(
@@ -71,79 +75,106 @@ class SimilarMediaScanner(context: Context) {
 
         val modeName = if (fullScan) "full" else "incremental"
         progress(ScanProgress(ScanStage.ENUMERATING, 0, database.groupCount(), "Starting $modeName MediaStore scan."))
-        repository.forEachMediaBatch(
-            batchSize = BATCH_SIZE,
-            imageGenerationAfter = imageGenerationAfter,
-            videoGenerationAfter = videoGenerationAfter
-        ) { batch ->
-            progress(
-                ScanProgress(
-                    stage = ScanStage.FINGERPRINTING,
-                    processedCount = processed,
-                    discoveredGroupCount = database.groupCount(),
-                    message = "Processing batch of ${batch.size} assets."
+        metrics.measure("enumerate_and_fingerprint_total") {
+            repository.forEachMediaBatch(
+                batchSize = BATCH_SIZE,
+                imageGenerationAfter = imageGenerationAfter,
+                videoGenerationAfter = videoGenerationAfter
+            ) { batch ->
+                progress(
+                    ScanProgress(
+                        stage = ScanStage.FINGERPRINTING,
+                        processedCount = visited,
+                        discoveredGroupCount = database.groupCount(),
+                        message = "Processing batch of ${batch.size} assets."
+                    )
                 )
-            )
 
-            batch.forEach { asset ->
-                processedKinds += asset.kind
-                if (asset.kind == MediaKind.PHOTO || asset.kind == MediaKind.SCREENSHOT) {
-                    maxImageGeneration = maxOf(maxImageGeneration, asset.generationModified)
-                } else {
-                    maxVideoGeneration = maxOf(maxVideoGeneration, asset.generationModified)
+                batch.forEach { asset ->
+                    visited++
+                    if (asset.kind == MediaKind.PHOTO || asset.kind == MediaKind.SCREENSHOT) {
+                        maxImageGeneration = maxOf(maxImageGeneration, asset.generationModified)
+                    } else {
+                        maxVideoGeneration = maxOf(maxVideoGeneration, asset.generationModified)
+                    }
+                    val token = metrics.measure("upsert_asset") {
+                        database.upsertAsset(asset, scanToken)
+                    }
+                    if (token == null) {
+                        // 用户正在删除或资源状态已变化，本轮扫描跳过，不覆盖用户操作。
+                        return@forEach
+                    }
+
+                    /*
+                     * 全量扫描现在承担“校验媒体库是否完整”的职责，但不再等同于“重算全部指纹”。
+                     * 如果 MediaStore 关键元数据和算法版本都没变，旧 fingerprint 与旧分组仍然有效，
+                     * 这里只更新 last_seen_scan 后直接跳过，扫描 9k/10w 资源时收益最大。
+                     */
+                    if (!token.needsFingerprint) {
+                        skippedUnchanged++
+                        return@forEach
+                    }
+
+                    changedKinds += asset.kind
+                    if (!metrics.measure("prepare_asset_for_rescan") { database.prepareAssetForRescan(token) }) {
+                        // 用户正在删除或资源状态已变化，本轮扫描跳过，不覆盖用户操作。
+                        return@forEach
+                    }
+                    if (asset.kind == MediaKind.VIDEO || asset.kind == MediaKind.SCREEN_RECORDING) {
+                        metrics.measure("process_video") { processVideo(token, asset, metrics) }
+                    } else {
+                        metrics.measure("process_visual") { processVisual(token, asset, metrics) }
+                    }
+                    fingerprinted++
                 }
-                val token = database.upsertAsset(asset, scanToken)
-                if (token == null || !database.prepareAssetForRescan(token)) {
-                    // 用户正在删除或资源状态已变化，本轮扫描跳过，不覆盖用户操作。
-                    return@forEach
-                }
-                if (asset.kind == MediaKind.VIDEO || asset.kind == MediaKind.SCREEN_RECORDING) {
-                    processVideo(token, asset)
-                } else {
-                    processVisual(token, asset)
-                }
-                processed++
+
+                progress(
+                    ScanProgress(
+                        stage = ScanStage.MATCHING,
+                        processedCount = visited,
+                        discoveredGroupCount = database.groupCount(),
+                        message = "Scanned $visited assets. $fingerprinted updated, $skippedUnchanged reused."
+                    )
+                )
             }
-
-            progress(
-                ScanProgress(
-                    stage = ScanStage.MATCHING,
-                    processedCount = processed,
-                    discoveredGroupCount = database.groupCount(),
-                    message = "Scanned $processed assets. Results are being updated."
-                )
-            )
         }
 
         if (fullScan && hasFullVisualAccess) {
-            database.removeAssetsNotSeenInScan(scanToken)
+            metrics.measure("remove_assets_not_seen") { database.removeAssetsNotSeenInScan(scanToken) }
         }
         /*
          * 扫描过程中先增量写组以便 UI 及时展示；完成阶段再按竞品的“时间排序 +
          * 锚点直接相似”规则确定性重建本轮涉及类型，避免结果受扫描顺序影响。
          */
-        database.rebuildSimilarGroups(processedKinds)
-        database.cleanupInvalidGroups()
+        metrics.measure("rebuild_similar_groups") { database.rebuildSimilarGroups(changedKinds) }
+        metrics.measure("cleanup_invalid_groups") { database.cleanupInvalidGroups() }
         scanStateStore.save(
             maxImageGeneration,
             maxVideoGeneration,
             mediaStoreVersion,
             completedFullScan = fullScan && hasFullVisualAccess
         )
-        val groups = database.loadGroups(MAX_GROUPS_TO_SHOW)
+        val groups = metrics.measure("load_groups") { database.loadGroups(MAX_GROUPS_TO_SHOW) }
         val elapsed = System.currentTimeMillis() - startedAt
+        metrics.logSummary(
+            modeName = modeName,
+            visited = visited,
+            fingerprinted = fingerprinted,
+            skippedUnchanged = skippedUnchanged,
+            elapsed = elapsed
+        )
         progress(
             ScanProgress(
                 stage = ScanStage.COMPLETED,
-                processedCount = processed,
+                processedCount = visited,
                 discoveredGroupCount = groups.size,
                 message = "Completed $modeName media scan."
             )
         )
         return ScanResult(
-            assetCount = processed,
+            assetCount = visited,
             groups = groups,
-            message = "Finished $modeName scan in ${elapsed}ms using cached fingerprints and candidate matching."
+            message = "Finished $modeName scan in ${elapsed}ms. Updated $fingerprinted, reused $skippedUnchanged cached fingerprints."
         )
     }
 
@@ -151,8 +182,16 @@ class SimilarMediaScanner(context: Context) {
 
     fun loadCachedGroups(limit: Int = MAX_GROUPS_TO_SHOW) = database.loadGroups(limit)
 
-    private fun processVisual(token: AssetScanToken, asset: MediaAsset) {
-        val visual = buildVisualFingerprint(asset)
+    /**
+     * SimilarMediaScanner 持有 SQLiteOpenHelper。前台服务每次扫描都会创建 scanner，
+     * 扫描结束后必须显式关闭数据库连接，避免系统在 GC 时报告 SQLiteConnection 泄漏。
+     */
+    fun close() {
+        database.close()
+    }
+
+    private fun processVisual(token: AssetScanToken, asset: MediaAsset, metrics: ScanMetrics) {
+        val visual = metrics.measure("build_visual_fingerprint") { buildVisualFingerprint(asset, metrics) }
         if (visual == null || !visual.hash.isValid()) {
             database.markFingerprintFailed(token)
             return
@@ -163,11 +202,13 @@ class SimilarMediaScanner(context: Context) {
          * 元数据重写、重新保存但视觉内容一致的图片会被 Demo 漏掉。
          */
         val duplicateReferenceCandidates =
-            database.findDuplicateReferenceCandidates(token.assetId, asset, visual.hash)
+            metrics.measure("find_duplicate_candidates") {
+                database.findDuplicateReferenceCandidates(token.assetId, asset, visual.hash)
+            }
         val contentSha256 = if (duplicateReferenceCandidates.isEmpty()) {
             null
         } else {
-            digestCalculator.sha256(asset.uri)
+            metrics.measure("sha256_current_asset") { digestCalculator.sha256(asset.uri) }
         }
         asset.contentSha256 = contentSha256
         asset.qualityScore = visual.qualityScore
@@ -186,20 +227,24 @@ class SimilarMediaScanner(context: Context) {
         }
 
         val duplicateIds = duplicateReferenceCandidates.mapTo(mutableSetOf()) { it.assetId }
-        val candidateIds = visualIndexes
-            .getValue(asset.kind)
-            .query(
-                visual.hash.imageHash,
-                Threshold.maxCandidateDistance(asset.kind)
-            )
-        val similarCandidates = database.loadCandidatesByIds(candidateIds, token.assetId).filter { candidate ->
+        val candidateIds = metrics.measure("bk_tree_visual_query") {
+            visualIndexes
+                .getValue(asset.kind)
+                .query(
+                    visual.hash.imageHash,
+                    Threshold.maxCandidateDistance(asset.kind)
+                )
+        }
+        val similarCandidates = metrics.measure("load_and_filter_visual_candidates") {
+            database.loadCandidatesByIds(candidateIds, token.assetId).filter { candidate ->
             // Duplicates 和 Similar 互斥，避免首页重复统计同一资源。
-            if (candidate.assetId !in duplicateIds &&
-                visual.hash.isSimilarTo(candidate.hash, asset.kind)
-            ) {
-                true
-            } else {
-                false
+                if (candidate.assetId !in duplicateIds &&
+                    visual.hash.isSimilarTo(candidate.hash, asset.kind)
+                ) {
+                    true
+                } else {
+                    false
+                }
             }
         }
 
@@ -207,13 +252,15 @@ class SimilarMediaScanner(context: Context) {
          * 指纹先使用 revision 乐观锁提交。若用户在计算期间发起删除，提交返回 false，
          * 后续分组和 BK-Tree 更新全部放弃，避免被删除资源重新出现。
          */
-        val committed = database.markFingerprintDone(
-            token,
-            visual.hash,
-            asset,
-            contentSha256,
-            visual.qualityScore
-        )
+        val committed = metrics.measure("mark_visual_fingerprint_done") {
+            database.markFingerprintDone(
+                token,
+                visual.hash,
+                asset,
+                contentSha256,
+                visual.qualityScore
+            )
+        }
         if (!committed) return
 
         duplicateReferenceCandidates.forEach { candidate ->
@@ -225,22 +272,29 @@ class SimilarMediaScanner(context: Context) {
         visualIndexes.getValue(asset.kind).add(token.assetId, visual.hash.imageHash)
     }
 
-    private fun processVideo(token: AssetScanToken, asset: MediaAsset) {
+    private fun processVideo(token: AssetScanToken, asset: MediaAsset, metrics: ScanMetrics) {
         /*
-         * 视频不复用图片缩略图流程。竞品通过 MediaMetadataRetriever 抽取 7～13 帧，
-         * 对每帧生成组合 Hash，再在两段视频的全部帧之间交叉匹配。
+         * 视频不复用图片缩略图流程。两阶段 quick/full 在真机数据上会漏掉相似视频，
+         * 并且候选补算完整指纹会抵消节省的抽帧成本；这里恢复为单阶段 7 帧稳定识别。
          */
-        val fingerprint = videoFingerprintCalculator.calculate(asset)
+        val fingerprint = metrics.measure("calculate_video_fingerprint") {
+            videoFingerprintCalculator.calculate(asset)
+        }
         if (!fingerprint.isValid()) {
             database.markFingerprintFailed(token)
             return
         }
 
-        val similarCandidates = database.findVideoFingerprintCandidates(token.assetId, asset).filter { candidate ->
-            val candidateFingerprint = candidate.videoFingerprint ?: return@filter false
-            fingerprint.isSimilarTo(candidateFingerprint, asset.kind)
+        val similarCandidates = metrics.measure("load_and_filter_video_candidates") {
+            database.findVideoFingerprintCandidates(token.assetId, asset).filter { candidate ->
+                val candidateFingerprint = candidate.videoFingerprint ?: return@filter false
+                fingerprint.isSimilarTo(candidateFingerprint, asset.kind)
+            }
         }
-        if (!database.markVideoFingerprintDone(token, fingerprint, asset, fingerprint.qualityScore)) {
+        if (!metrics.measure("mark_video_fingerprint_done") {
+                database.markVideoFingerprintDone(token, fingerprint, asset, fingerprint.qualityScore)
+            }
+        ) {
             return
         }
         similarCandidates.forEach { candidate ->
@@ -248,13 +302,17 @@ class SimilarMediaScanner(context: Context) {
         }
     }
 
-    private fun buildVisualFingerprint(asset: MediaAsset): VisualFingerprintResult? {
+    private fun buildVisualFingerprint(asset: MediaAsset, metrics: ScanMetrics): VisualFingerprintResult? {
         // 指纹输入走竞品兼容加载；UI 预览仍通过 loadBitmap() 使用真实媒体 URI。
-        val bitmap = bitmapLoader.loadFingerprintBitmap(asset) ?: return null
+        val bitmap = metrics.measure("load_fingerprint_bitmap") {
+            bitmapLoader.loadFingerprintBitmap(asset, FINGERPRINT_BITMAP_SIZE)
+        } ?: return null
         return try {
             VisualFingerprintResult(
-                hash = HashCalculator.buildHash(bitmap),
-                qualityScore = MediaQualityAnalyzer.score(bitmap, asset)
+                hash = metrics.measure("calculate_image_hash") { HashCalculator.buildHash(bitmap) },
+                qualityScore = metrics.measure("calculate_quality_score") {
+                    MediaQualityAnalyzer.score(bitmap, asset)
+                }
             )
         } finally {
             bitmap.recycle()
@@ -277,6 +335,11 @@ class SimilarMediaScanner(context: Context) {
     companion object {
         private const val BATCH_SIZE = 500
         private const val MAX_GROUPS_TO_SHOW = Int.MAX_VALUE
+        /*
+         * dHash 最终只需要 9x8 采样，colorHash 是 8x3 颜色直方图；扫描阶段使用 512
+         * 缩略图可以显著降低 MediaProvider/Bitmap 解码成本。UI 预览仍使用 1024。
+         */
+        private const val FINGERPRINT_BITMAP_SIZE = 512
     }
 }
 
@@ -284,3 +347,40 @@ private data class VisualFingerprintResult(
     val hash: CombinedHash,
     val qualityScore: Double
 )
+
+private class ScanMetrics {
+    private val totals = linkedMapOf<String, Long>()
+
+    fun <T> measure(name: String, block: () -> T): T {
+        val startedAt = System.nanoTime()
+        return try {
+            block()
+        } finally {
+            add(name, (System.nanoTime() - startedAt) / 1_000_000L)
+        }
+    }
+
+    fun logSummary(
+        modeName: String,
+        visited: Int,
+        fingerprinted: Int,
+        skippedUnchanged: Int,
+        elapsed: Long
+    ) {
+        Log.d(
+            TAG,
+            "scan=$modeName elapsed=${elapsed}ms visited=$visited fingerprinted=$fingerprinted reused=$skippedUnchanged"
+        )
+        totals.forEach { (name, duration) ->
+            Log.d(TAG, "metric.$name=${duration}ms")
+        }
+    }
+
+    private fun add(name: String, durationMs: Long) {
+        totals[name] = (totals[name] ?: 0L) + durationMs
+    }
+
+    companion object {
+        private const val TAG = "SimilarScanMetrics"
+    }
+}

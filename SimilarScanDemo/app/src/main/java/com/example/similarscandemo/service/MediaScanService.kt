@@ -36,25 +36,30 @@ class MediaScanService : Service() {
         val forceFull = intent?.getBooleanExtra(EXTRA_FORCE_FULL, false) == true
         executor.execute {
             val scanner = SimilarMediaScanner(applicationContext)
-            runCatching {
-                scanner.scan(forceFull) { progress ->
-                    updateNotification(progress.message, progress.processedCount)
+            try {
+                runCatching {
+                    scanner.scan(forceFull) { progress ->
+                        updateNotification(progress.message, progress.processedCount)
+                        sendProgress(
+                            ACTION_PROGRESS,
+                            progress.processedCount,
+                            progress.discoveredGroupCount,
+                            progress.message
+                        )
+                    }
+                }.onSuccess { result ->
+                    sendProgress(ACTION_COMPLETE, result.assetCount, result.groups.size, result.message)
+                }.onFailure { error ->
                     sendProgress(
-                        ACTION_PROGRESS,
-                        progress.processedCount,
-                        progress.discoveredGroupCount,
-                        progress.message
+                        ACTION_FAILED,
+                        0,
+                        0,
+                        error.message ?: "Media scan failed."
                     )
                 }
-            }.onSuccess { result ->
-                sendProgress(ACTION_COMPLETE, result.assetCount, result.groups.size, result.message)
-            }.onFailure { error ->
-                sendProgress(
-                    ACTION_FAILED,
-                    0,
-                    0,
-                    error.message ?: "Media scan failed."
-                )
+            } finally {
+                // SimilarMediaScanner 内部持有 SQLiteOpenHelper，服务扫描结束必须关闭连接。
+                scanner.close()
             }
             scanning.set(false)
             isRunning = false

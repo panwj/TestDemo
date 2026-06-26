@@ -12,8 +12,10 @@ import java.io.File
  * 按竞品规则提取视频多帧指纹。
  *
  * 竞品 ExtractionRule 为：最小间隔 2、最大间隔 10、常规 7 帧、最多 13 帧。
- * 反编译代码直接对 MediaMetadataRetriever 返回的毫秒时长使用这些数值，因此这里
- * 保持相同单位和分支，不自行换算为秒，方便对同一设备上的结果逐条验证。
+ *
+ * 真机验证表明，两阶段 quick/full 方案会漏掉真实相似视频，而且命中后补完整指纹
+ * 反而让总耗时上升。因此当前恢复为单阶段 7 帧稳定路径：
+ * 首帧、尾帧和中间等距帧覆盖完整时间轴，召回质量明显优于 3 帧 quick 预筛。
  */
 class VideoFingerprintCalculator(context: Context) {
     private val appContext = context.applicationContext
@@ -44,7 +46,11 @@ class VideoFingerprintCalculator(context: Context) {
                 } else {
                     try {
                         hashes += HashCalculator.buildHash(frame)
-                        qualityScore = maxOf(qualityScore, MediaQualityAnalyzer.score(frame, asset))
+                        /*
+                         * 视频抽出的帧已经是 9x8 小图，质量分只做元数据排序兜底。
+                         * 对这种小图再做 64x64 放大采样没有意义，也会放大扫描成本。
+                         */
+                        qualityScore = maxOf(qualityScore, MediaQualityAnalyzer.metadataScore(asset))
                     } finally {
                         frame.recycle()
                     }
@@ -75,43 +81,20 @@ class VideoFingerprintCalculator(context: Context) {
     }
 
     /**
-     * 复现竞品 7/13 帧规则。常见视频会进入 13 帧等距分支。
+     * 使用 7 帧等距采样覆盖完整时间轴。
+     *
+     * 3 帧 quick 预筛在真实数据上会漏掉相似视频；13 帧完整规则成本又过高。
+     * 当前选择 7 帧作为稳定折中：比 quick 有更好的召回，比 13 帧少接近一半抽帧。
      */
     private fun buildSampleTimes(durationMs: Double): List<Double> {
         if (durationMs <= 0.0) return listOf(0.0)
-
-        val sevenFrameInterval = durationMs / (NORMAL_FRAME_COUNT - 1)
-        return when {
-            sevenFrameInterval in MIN_INTERVAL..MAX_INTERVAL ->
-                evenlySpaced(durationMs, NORMAL_FRAME_COUNT)
-
-            sevenFrameInterval < MIN_INTERVAL ->
-                fixedInterval(durationMs, MIN_INTERVAL)
-
-            durationMs / MAX_FRAME_COUNT in MIN_INTERVAL..MAX_INTERVAL ->
-                fixedInterval(durationMs, MAX_INTERVAL)
-
-            else -> evenlySpaced(durationMs, MAX_FRAME_COUNT)
-        }
+        return evenlySpaced(durationMs, NORMAL_FRAME_COUNT)
     }
 
     private fun evenlySpaced(durationMs: Double, count: Int): List<Double> {
         if (count <= 1) return listOf(0.0)
         val interval = durationMs / (count - 1)
         return List(count) { index -> minOf(durationMs, interval * index) }
-    }
-
-    private fun fixedInterval(durationMs: Double, interval: Double): List<Double> {
-        val safeInterval = maxOf(1.0, interval)
-        val result = ArrayList<Double>()
-        var time = 0.0
-        while (time < durationMs) {
-            result += time
-            time += safeInterval
-        }
-        // 竞品 uh.b.b() 无论间隔是否整除，都保证最后一个时间点为视频末尾。
-        if (result.lastOrNull() != durationMs) result += durationMs
-        return result
     }
 
     private fun extractFrame(retriever: MediaMetadataRetriever, timeUs: Long): Bitmap? {
@@ -169,10 +152,7 @@ class VideoFingerprintCalculator(context: Context) {
     private fun invalidFingerprint() = VideoFingerprint(listOf(INVALID_HASH))
 
     private companion object {
-        const val MIN_INTERVAL = 2.0
-        const val MAX_INTERVAL = 10.0
         const val NORMAL_FRAME_COUNT = 7
-        const val MAX_FRAME_COUNT = 13
         const val MICROSECONDS_PER_MILLISECOND = 1_000.0
         const val HASH_WIDTH = 9
         const val HASH_HEIGHT = 8

@@ -60,6 +60,8 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                 fingerprint_status TEXT NOT NULL,
                 last_scanned_at INTEGER,
                 last_seen_scan TEXT,
+                source_signature TEXT,
+                fingerprint_algorithm_version INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(media_store_id, type)
             )
             """.trimIndent()
@@ -107,7 +109,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         db.execSQL("CREATE INDEX idx_asset_type_status ON media_asset(type, fingerprint_status)")
         db.execSQL("CREATE INDEX idx_asset_state_type ON media_asset(state, type)")
         db.execSQL("CREATE INDEX idx_asset_type_duration_size ON media_asset(type, duration, size)")
+        db.execSQL("CREATE INDEX idx_asset_duplicate_ref ON media_asset(type, state, size, width, height, is_edited)")
+        db.execSQL("CREATE INDEX idx_asset_video_candidate ON media_asset(type, state, fingerprint_algorithm_version)")
         db.execSQL("CREATE INDEX idx_fingerprint_candidate ON fingerprint(hash_prefix, aspect_bucket, duration_bucket)")
+        db.execSQL("CREATE INDEX idx_fingerprint_image_hash ON fingerprint(image_hash)")
+        db.execSQL("CREATE INDEX idx_fingerprint_video_bucket ON fingerprint(duration_bucket, aspect_bucket)")
         db.execSQL("CREATE INDEX idx_fingerprint_sha ON fingerprint(content_sha256)")
         db.execSQL("CREATE INDEX idx_fingerprint_potential ON fingerprint(potential_identifier)")
         db.execSQL("CREATE INDEX idx_group_item_asset ON similar_group_item(asset_id)")
@@ -146,10 +152,15 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
      *
      * DELETE_PENDING/DELETED 资源不会重新变为 ACTIVE。扫描计算完成后必须携带返回的
      * revision 提交，若用户期间执行删除，revision 会变化，旧计算结果将被拒绝。
+     *
+     * 这里同时计算 source_signature：它描述“当前媒体内容是否足以复用旧指纹”。
+     * 如果签名、算法版本和 fingerprint 记录都存在且一致，本轮只更新 last_seen_scan，
+     * 扫描器会跳过 bitmap 解码、dHash/colorHash 和视频抽帧，避免全量校验时重复计算。
      */
     fun upsertAsset(asset: MediaAsset, scanToken: String = ""): AssetScanToken? {
         val db = writableDatabase
         val existingId = findAssetId(asset.id, asset.kind)
+        val sourceSignature = SourceSignature.from(asset)
         val values = ContentValues().apply {
             put("media_store_id", asset.id)
             put("uri", asset.uri.toString())
@@ -172,20 +183,29 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             put("chat_source", asset.chatSource)
             put("last_scanned_at", System.currentTimeMillis())
             put("last_seen_scan", scanToken)
+            put("source_signature", sourceSignature)
+            put("fingerprint_algorithm_version", FINGERPRINT_ALGORITHM_VERSION)
         }
         if (existingId != null) {
-            val current = assetStateAndRevision(existingId) ?: return null
-            if (current.first == "DELETE_PENDING" || current.first == "DELETED") return null
-            values.put("fingerprint_status", if (hasFingerprint(existingId)) "DONE" else "PENDING")
+            val current = assetStateRevisionAndFingerprint(existingId) ?: return null
+            if (current.state == "DELETE_PENDING" || current.state == "DELETED") return null
+            val canReuseFingerprint = current.hasFingerprint &&
+                current.sourceSignature == sourceSignature &&
+                current.algorithmVersion == FINGERPRINT_ALGORITHM_VERSION
+            values.put("fingerprint_status", if (canReuseFingerprint) "DONE" else "PENDING")
             db.update("media_asset", values, "id=?", arrayOf(existingId.toString()))
-            return AssetScanToken(existingId, current.second)
+            return AssetScanToken(
+                assetId = existingId,
+                revision = current.revision,
+                needsFingerprint = !canReuseFingerprint
+            )
         } else {
             values.put("state", "ACTIVE")
             values.put("state_changed_at", System.currentTimeMillis())
             values.put("revision", 1L)
             values.put("fingerprint_status", "PENDING")
             val id = db.insert("media_asset", null, values)
-            return if (id > 0L) AssetScanToken(id, 1L) else null
+            return if (id > 0L) AssetScanToken(id, 1L, needsFingerprint = true) else null
         }
     }
 
@@ -468,6 +488,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             WHERE a.type=?
               AND a.state='ACTIVE'
               AND a.fingerprint_status='DONE'
+              AND a.fingerprint_algorithm_version=?
               AND NOT EXISTS (
                   SELECT 1
                   FROM similar_group_item duplicate_item
@@ -479,7 +500,12 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
               )
             ORDER BY $orderBy
             """.trimIndent(),
-            arrayOf(kind.name, GroupCategory.DUPLICATE.name, kind.name)
+            arrayOf(
+                kind.name,
+                FINGERPRINT_ALGORITHM_VERSION.toString(),
+                GroupCategory.DUPLICATE.name,
+                kind.name
+            )
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
@@ -762,9 +788,10 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             JOIN media_asset a ON a.id = f.asset_id
             WHERE a.type = ?
               AND a.state = 'ACTIVE'
+              AND a.fingerprint_algorithm_version = ?
               AND f.video_frame_hashes IS NULL
             """.trimIndent(),
-            arrayOf(kind.name)
+            arrayOf(kind.name, FINGERPRINT_ALGORITHM_VERSION.toString())
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
@@ -808,9 +835,17 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
 
     fun findVideoFingerprintCandidates(assetId: Long, asset: MediaAsset): List<CandidateFingerprint> {
         /*
-         * 视频保存完整多帧指纹。时长差和宽高比只用于排序，不作为硬过滤，
-         * 避免在跨帧 Hash 阈值判断前丢失候选。
+         * 视频保存完整多帧指纹。旧版本会读取同类型所有视频再逐一比较，视频数量一大
+         * 就会退化成近似 O(n²)。这里先用轻量元数据做候选收窄：
+         * 1. 类型必须一致；
+         * 2. 时长桶接近，优先排除明显不是同一段内容的视频；
+         * 3. 宽高比接近，避免横屏/竖屏误召回；
+         * 4. 指纹算法版本一致，防止旧算法结果参与新算法比较。
+         *
+         * 这些条件只用于召回，最终仍由多帧 dHash/colorHash 精判决定是否相似。
          */
+        val durationBucket = HashBuckets.durationBucket(asset.duration)
+        val aspectBucket = HashBuckets.aspectBucket(asset.width, asset.height)
         return readableDatabase.rawQuery(
             """
             SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
@@ -820,17 +855,25 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             JOIN media_asset a ON a.id = f.asset_id
             WHERE a.type = ?
               AND a.state = 'ACTIVE'
+              AND a.fingerprint_algorithm_version = ?
               AND a.id != ?
               AND f.video_frame_hashes IS NOT NULL
+              AND ABS(f.duration_bucket - ?) <= ?
+              AND ABS(f.aspect_bucket - ?) <= ?
             ORDER BY
               ABS(f.duration_bucket - ?) ASC,
               ABS(f.aspect_bucket - ?) ASC
             """.trimIndent(),
             arrayOf(
                 asset.kind.name,
+                FINGERPRINT_ALGORITHM_VERSION.toString(),
                 assetId.toString(),
-                HashBuckets.durationBucket(asset.duration).toString(),
-                HashBuckets.aspectBucket(asset.width, asset.height).toString()
+                durationBucket.toString(),
+                videoDurationTolerance(asset.duration).toString(),
+                aspectBucket.toString(),
+                VIDEO_ASPECT_BUCKET_TOLERANCE.toString(),
+                durationBucket.toString(),
+                aspectBucket.toString()
             )
         ).use { cursor -> candidateFingerprintsFrom(cursor) }
     }
@@ -1073,12 +1116,28 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
     }
 
-    private fun assetStateAndRevision(assetId: Long): Pair<String, Long>? {
+    private fun assetStateRevisionAndFingerprint(assetId: Long): AssetScanSnapshot? {
         return readableDatabase.rawQuery(
-            "SELECT state, revision FROM media_asset WHERE id=?",
+            """
+            SELECT a.state, a.revision, a.source_signature, a.fingerprint_algorithm_version,
+                   CASE WHEN f.asset_id IS NULL THEN 0 ELSE 1 END
+            FROM media_asset a
+            LEFT JOIN fingerprint f ON f.asset_id = a.id
+            WHERE a.id=?
+            """.trimIndent(),
             arrayOf(assetId.toString())
         ).use { cursor ->
-            if (cursor.moveToFirst()) cursor.getString(0) to cursor.getLong(1) else null
+            if (cursor.moveToFirst()) {
+                AssetScanSnapshot(
+                    state = cursor.getString(0),
+                    revision = cursor.getLong(1),
+                    sourceSignature = cursor.getString(2),
+                    algorithmVersion = cursor.getInt(3),
+                    hasFingerprint = cursor.getInt(4) == 1
+                )
+            } else {
+                null
+            }
         }
     }
 
@@ -1094,13 +1153,6 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             "SELECT COUNT(*) FROM media_asset WHERE id IN (?, ?) AND state='ACTIVE'",
             arrayOf(firstId.toString(), secondId.toString())
         ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) == 2 }
-    }
-
-    private fun hasFingerprint(assetId: Long): Boolean {
-        return readableDatabase.rawQuery(
-            "SELECT 1 FROM fingerprint WHERE asset_id=?",
-            arrayOf(assetId.toString())
-        ).use { it.moveToFirst() }
     }
 
     private fun groupIdForAsset(
@@ -1334,14 +1386,23 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          */
         private const val OTHER_GROUP_PREVIEW_LIMIT = 120
         /*
-         * v17 修复视频分组锚点排序：
-         * 1. 添加 date_added 字段到数据库，用于视频锚点排序。
-         * 2. 视频分组排序从 media_store_id DESC 改为 date_added DESC，与竞品完全一致。
-         * 3. 视频帧匹配策略改为笛卡尔积全帧匹配，提高召回率。
+         * v21 回退两阶段视频识别，恢复单阶段 7 帧稳定召回：
+         * 1. 全量扫描只校验 MediaStore 完整性，不再强制重算未变化资源的指纹。
+         * 2. 候选召回和分组重建只使用当前算法版本的 fingerprint，避免旧结果混入。
+         * 3. 视频候选先按时长桶、宽高比桶收窄，再进入多帧精判。
+         * 4. 新增索引降低 duplicateReference、视频候选召回和分组阶段的 SQL 成本。
+         * 5. quick/full 方案在真机数据中漏召回，不能作为默认产品路径。
          */
-        private const val DB_VERSION = 17
+        private const val DB_VERSION = 21
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
+        private const val FINGERPRINT_ALGORITHM_VERSION = 21
+        private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
         private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
+        private fun videoDurationTolerance(durationMs: Long): Long {
+            val durationBucket = HashBuckets.durationBucket(durationMs)
+            return maxOf(2L, durationBucket / 10L)
+        }
     }
 }
 
@@ -1360,6 +1421,14 @@ private data class AssetStats(
 data class HashIndexEntry(
     val assetId: Long,
     val imageHash: Long
+)
+
+private data class AssetScanSnapshot(
+    val state: String,
+    val revision: Long,
+    val sourceSignature: String?,
+    val algorithmVersion: Int,
+    val hasFingerprint: Boolean
 )
 
 private data class GroupingFingerprint(
@@ -1385,8 +1454,35 @@ private data class GroupingFingerprint(
  */
 data class AssetScanToken(
     val assetId: Long,
-    val revision: Long
+    val revision: Long,
+    val needsFingerprint: Boolean
 )
+
+object SourceSignature {
+    /**
+     * 用稳定的 MediaStore 元数据描述“内容是否变化”。
+     *
+     * 不把文件名、bucket 放入签名：这些字段只影响展示，不应该导致 dHash/colorHash
+     * 或视频多帧指纹重算。收藏/编辑状态会影响 qualityScore 和 Best 排序，因此保留在
+     * 签名中。generationModified 在 Android 11+ 更可靠；API 23-29 使用
+     * updatedAt/size/宽高/时长兜底。
+     */
+    fun from(asset: MediaAsset): String {
+        return listOf(
+            asset.id,
+            asset.kind.name,
+            asset.size,
+            asset.width,
+            asset.height,
+            asset.duration,
+            asset.updatedAt.time,
+            asset.generationModified,
+            asset.mimeType,
+            asset.isFavorite,
+            asset.isEdited
+        ).joinToString("|")
+    }
+}
 
 object HashBuckets {
     fun hashPrefix(hash: Long): Int = ((hash ushr 48) and 0xFFFF).toInt()
