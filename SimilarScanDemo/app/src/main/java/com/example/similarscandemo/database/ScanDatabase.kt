@@ -1488,9 +1488,13 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          */
         private const val OTHER_GROUP_PREVIEW_LIMIT = 120
         /*
+         * v26 在保持图片指纹输入 256 的前提下，Android 10+ 优先使用
+         * ContentResolver.loadThumbnail(asset.uri, 256) 加载指纹 Bitmap，失败后再回退
+         * MediaStore.Images.Thumbnails。输入来源变化可能改变 dHash/colorHash 结果，因此
+         * 提升 fingerprint_algorithm_version，避免新旧指纹混用。
+         *
          * v25 将图片扫描指纹输入从 512 统一压到 256，并让最终 Similar 分组重建
-         * 优先复用扫描阶段写入的候选关系。指纹输入尺寸变化会改变 dHash/colorHash
-         * 结果，因此必须提升 fingerprint_algorithm_version，避免新旧指纹混用。
+         * 优先复用扫描阶段写入的候选关系。
          *
          * 历史优化：
          * 1. 全量扫描只校验 MediaStore 完整性，不再强制重算未变化资源的指纹。
@@ -1501,9 +1505,9 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
          * 7. 完整清晰度/曝光质量分不再阻塞首次扫描主链路。
          */
-        private const val DB_VERSION = 25
+        private const val DB_VERSION = 26
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
-        private const val FINGERPRINT_ALGORITHM_VERSION = 25
+        private const val FINGERPRINT_ALGORITHM_VERSION = 26
         private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
         private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 

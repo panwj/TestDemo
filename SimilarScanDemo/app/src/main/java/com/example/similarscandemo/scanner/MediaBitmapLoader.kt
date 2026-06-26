@@ -1,7 +1,6 @@
 package com.example.similarscandemo.scanner
 
 import android.content.ContentResolver
-import android.content.ContentUris
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
@@ -27,8 +26,8 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
      *
      * 该方法只服务图片和截图。视频使用独立的 MediaMetadataRetriever 多帧流程。
      * 当前产品策略是“系统缩略图优先”：
-     * 1. 先读 MediaStore.Images.Thumbnails，尽量复用系统相册/竞品预热后的缩略图缓存；
-     * 2. 再读 API 29+ 的 ContentResolver.loadThumbnail；
+     * 1. Android 10+ 先走 ContentResolver.loadThumbnail，请求目标尺寸由系统直接生成；
+     * 2. 失败或低版本再读 MediaStore.Images.Thumbnails，复用系统相册预生成缓存；
      * 3. 最后才自行通过 uri 或 DATA 路径 decode。
      */
     fun loadFingerprintBitmap(asset: MediaAsset, thumbSize: Int = 1024): Bitmap? {
@@ -36,22 +35,17 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
     }
 
     fun loadFingerprintBitmapWithSource(asset: MediaAsset, thumbSize: Int = 1024): FingerprintBitmap? {
-        legacyImageThumbnail(asset)?.let {
-            return FingerprintBitmap(
-                normalizeFingerprintBitmap(it, thumbSize),
-                FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL
-            )
-        }
         if (Build.VERSION.SDK_INT >= 29) {
-            val competitorUri = ContentUris.withAppendedId(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                asset.id
-            )
             try {
+                /*
+                 * loadThumbnail 能让 MediaProvider 按请求尺寸返回缩略图，避免先取旧
+                 * MINI_KIND 大图再二次缩放。真机上重点观察 load_fingerprint_bitmap
+                 * 是否下降；失败时仍保留旧接口兜底，保证 API 23+ 和厂商 ROM 可用。
+                 */
                 return FingerprintBitmap(
                     normalizeFingerprintBitmap(
                         resolver.loadThumbnail(
-                            competitorUri,
+                            asset.uri,
                             Size(thumbSize, thumbSize),
                             null
                         ),
@@ -60,8 +54,14 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
                     FingerprintBitmapSource.SYSTEM_LOAD_THUMBNAIL
                 )
             } catch (_: Exception) {
-                // 当前 MediaProvider 不支持竞品的跨集合 URI，继续使用标准加载路径。
+                // 部分 MediaProvider/云端资源无法按 URI 加载缩略图，继续走旧缓存路径。
             }
+        }
+        legacyImageThumbnail(asset)?.let {
+            return FingerprintBitmap(
+                normalizeFingerprintBitmap(it, thumbSize),
+                FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL
+            )
         }
         decodeSampledBitmap(asset.uri, thumbSize)?.let {
             return FingerprintBitmap(normalizeFingerprintBitmap(it, thumbSize), FingerprintBitmapSource.DECODE_URI)
