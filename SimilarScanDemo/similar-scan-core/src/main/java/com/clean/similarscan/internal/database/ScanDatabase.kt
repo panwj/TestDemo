@@ -970,6 +970,9 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
          *
          * 这些条件只用于召回，最终仍由多帧 dHash/colorHash 精判决定是否相似。
          */
+        if (videoFingerprintMode == VideoFingerprintMode.COMPETITOR_COMPAT) {
+            return findCompetitorVideoFingerprintCandidates(assetId, asset, videoFingerprintMode)
+        }
         val durationBucket = HashBuckets.durationBucket(asset.duration)
         val aspectBucket = HashBuckets.aspectBucket(asset.width, asset.height)
         return readableDatabase.rawQuery(
@@ -1001,6 +1004,34 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
                 VIDEO_ASPECT_BUCKET_TOLERANCE.toString(),
                 durationBucket.toString(),
                 aspectBucket.toString()
+            )
+        ).use { cursor -> candidateFingerprintsFrom(cursor) }
+    }
+
+    private fun findCompetitorVideoFingerprintCandidates(
+        assetId: Long,
+        asset: MediaAsset,
+        videoFingerprintMode: VideoFingerprintMode
+    ): List<CandidateFingerprint> {
+        return readableDatabase.rawQuery(
+            """
+            SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
+                   a.size, a.created_at, a.updated_at, a.bucket, a.path_hint,
+                   f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors,
+                   f.video_fingerprint_source
+            FROM fingerprint f
+            JOIN media_asset a ON a.id = f.asset_id
+            WHERE a.type = ?
+              AND a.state = 'ACTIVE'
+              AND a.fingerprint_algorithm_version = ?
+              AND a.id != ?
+              AND f.video_frame_hashes IS NOT NULL
+            ORDER BY a.date_added DESC
+            """.trimIndent(),
+            arrayOf(
+                asset.kind.name,
+                fingerprintAlgorithmVersion(asset.kind, DEFAULT_IMAGE_FINGERPRINT_SIZE, videoFingerprintMode).toString(),
+                assetId.toString()
             )
         ).use { cursor -> candidateFingerprintsFrom(cursor) }
     }
@@ -1541,7 +1572,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
          * 2. 候选召回和分组重建只使用当前算法版本的 fingerprint，避免旧结果混入。
          * 3. 视频候选先按时长桶、宽高比桶收窄，再进入多帧精判。
          * 4. 新增索引降低 duplicateReference、视频候选召回和分组阶段的 SQL 成本。
-         * 5. 系统视频缩略图命中时保存单帧指纹，未命中时使用 MMR 7 帧兜底。
+         * 5. 视频指纹模式可配置；Demo 可使用竞品兼容模式抽取 7 到 13 帧。
          * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
          * 7. 完整清晰度/曝光质量分不再阻塞首次扫描主链路。
          */

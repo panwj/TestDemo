@@ -173,7 +173,9 @@ client.recoverStaleDeletePending()
 - `assetId -> CombinedHash` 内存缓存用于候选精判，避免大量回库读取 colorHash。
 - Duplicate 使用图片/截图的 duplicateReference 规则，SHA-256 是可延后缓存的字节级证据，不是进入 Duplicate 的硬条件；默认不阻塞扫描主链路。
 - Similar 最终按锚点直连规则重建，不使用相似关系传递闭包。
-- 视频/录屏支持 `FAST`、`BALANCED`、`ACCURATE` 三档指纹模式；默认 `BALANCED` 使用系统缩略图 + 多个 MMR 时间点，避免完全退化为单帧封面相似。
-- 视频候选先按类型、时长桶、宽高比桶收窄，再做帧级汉明预筛，最终仍走完整帧级 `dHash + colorHash` 精判。
+- 视频/录屏支持 `FAST`、`BALANCED`、`ACCURATE`、`COMPETITOR_COMPAT` 四档指纹模式；SDK 默认 `BALANCED`，Demo 为对齐竞品扫描结果显式使用 `COMPETITOR_COMPAT`。
+- `COMPETITOR_COMPAT` 不混用系统视频缩略图，按竞品规则抽取 7 到 13 个 9x8 帧，正常至少 2 帧命中，单帧有效时降到 1 帧命中。
+- 视频候选在普通模式下按类型、时长桶、宽高比桶收窄；竞品兼容模式下按同类型、同算法版本宽召回，再做帧级汉明预筛和完整帧级 `dHash + colorHash` 精判。
+- 全量扫描中图片和视频指纹计算使用独立线程池并发执行，SQLite 提交、BK-Tree 更新和分组写入仍在扫描线程串行完成，避免内部索引并发写入。
 
 详细算法和风险点见 [核心技术方案](docs/core-technical-design.md)。

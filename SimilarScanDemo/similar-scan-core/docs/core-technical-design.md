@@ -23,12 +23,12 @@
 读取扫描 checkpoint
 -> 判断 full / incremental 模式
 -> 从 SQLite 预加载 PHOTO、SCREENSHOT 的 BK-Tree 和 CombinedHash 内存缓存
--> MediaStore 按批枚举图片和视频，批大小 500
+-> MediaStore 按图片批次和视频批次轮询枚举，批大小 500
 -> media_asset upsert，生成本轮 AssetScanToken
 -> source_signature 和算法版本未变化时复用旧 fingerprint
--> 图片/截图走 processVisual()
--> 视频/录屏走 processVideo()
--> 扫描中增量写入 Duplicate/Similar 候选组
+-> 图片/截图指纹计算提交到 imageComputeExecutor
+-> 视频/录屏指纹计算提交到 videoComputeExecutor
+-> 扫描线程串行提交计算结果、更新 BK-Tree/cache、写入 Duplicate/Similar 候选组
 -> full scan 且完整授权时清理本轮未见资源
 -> 对变化类型 rebuildSimilarGroups()
 -> cleanupInvalidGroups()
@@ -37,6 +37,15 @@
 ```
 
 批大小只影响 MediaStore 读取节奏、进度回调和落库节奏，不是相似比较边界。已有旧指纹的资源会参与本轮新资源匹配；新资源提交指纹成功后也会立即加入当前扫描的候选索引。
+
+图片和视频使用独立计算线程池：
+
+```text
+IMAGE_COMPUTE_THREADS = 4
+VIDEO_COMPUTE_THREADS = 2
+```
+
+计算任务只做 Bitmap 加载、dHash/colorHash 或视频抽帧，不直接写 SQLite，不直接修改 BK-Tree。提交阶段仍由扫描线程串行执行，保证数据库、内存索引和 Similar/Duplicate 关系的更新顺序可控。`ScanMetrics` 中 `process_visual_compute`、`process_video_compute` 是各工作线程耗时累加，可能大于真实墙钟耗时；总墙钟耗时以扫描汇总行的 `elapsed` 为准。
 
 ## 3. MediaStore 枚举
 
@@ -95,6 +104,8 @@ duration
 ```text
 DATE_TAKEN > 0 ? DATE_TAKEN : DATE_ADDED * 1000
 ```
+
+同时拥有图片和视频读取权限时，SDK 不再先扫完所有图片再扫视频，而是交替输出图片批次、视频批次。这样视频指纹任务可以在图片指纹任务仍在执行时进入视频线程池，避免 9000+ 图片把几十个视频完全排到最后。
 
 MediaStore 查询异常不会被静默吞掉。原因是全量扫描如果只成功枚举部分资源，后续清理未出现记录会误删合法缓存。
 
@@ -448,12 +459,18 @@ Duplicate 优先级高于 Similar：
 
 ## 12. 图片/截图处理流程
 
-`processVisual()` 的实际步骤：
+图片/截图计算和提交已拆成两段。计算阶段在线程池中执行：
 
 ```text
 loadFingerprintBitmapWithSource(asset, imageFingerprintSize)
 -> HashCalculator.buildHash(bitmap)
--> findDuplicateReferenceCandidates()
+-> metadataScore(asset)
+```
+
+提交阶段在扫描线程中执行：
+
+```text
+findDuplicateReferenceCandidates()
 -> 可选：有 Duplicate 候选且配置开启时计算 SHA-256
 -> BK-Tree query(imageHash, Threshold.maxCandidateDistance(kind))
 -> 用 visualHashCache 做 dHash + colorHash 精判
@@ -475,10 +492,13 @@ loadFingerprintBitmapWithSource(asset, imageFingerprintSize)
 当前源码通过 `SimilarScanRequest.videoFingerprintMode` 控制视频指纹策略：
 
 ```text
-FAST     -> 系统缩略图单帧优先，失败时 MMR 3 个时间点
-BALANCED -> 系统缩略图 + MMR 4 个时间点，默认策略
-ACCURATE -> MMR 7 个时间点，不把系统缩略图作为唯一依据
+FAST              -> 系统缩略图单帧优先，失败时 MMR 3 个时间点
+BALANCED          -> 系统缩略图 + MMR 4 个时间点，SDK 默认策略
+ACCURATE          -> MMR 7 个时间点，不把系统缩略图作为唯一依据
+COMPETITOR_COMPAT -> 竞品兼容：不使用系统缩略图，按 0..duration 抽取 7 到 13 帧
 ```
+
+SDK 对其他产品的默认值仍是 `BALANCED`，因为它在速度、召回和误合并之间更稳。Demo 为了与竞品扫描结果对齐，在 `MediaScanService` 中显式传入 `VideoFingerprintMode.COMPETITOR_COMPAT`。
 
 ### 13.1 系统缩略图路径
 
@@ -513,6 +533,8 @@ VideoFingerprint(
 
 `BALANCED` 模式不会只依赖单帧缩略图，而是把系统缩略图作为第一帧，再补充 MMR 时间点。这样比纯 MMR 快，同时避免视频结果完全退化为封面相似。
 
+`COMPETITOR_COMPAT` 不读取系统视频缩略图，避免“单帧封面”和“多帧相似”混用同一语义。
+
 ### 13.2 MMR 抽帧路径
 
 需要 MMR 抽帧时，SDK 优先查询 DATA 真实路径：
@@ -533,13 +555,24 @@ MediaMetadataRetriever.setDataSource(path)
 -> 每帧 HashCalculator.buildHash()
 ```
 
-当前抽帧时间点避开绝对首尾，减少黑屏、片头、尾帧对结果的影响：
+普通模式抽帧时间点避开绝对首尾，减少黑屏、片头、尾帧对结果的影响：
 
 ```text
 FAST fallback: [10%, 50%, 90%]
 BALANCED:      [12%, 38%, 64%, 88%]
 ACCURATE:      [8%, 22%, 36%, 50%, 64%, 78%, 92%]
 ```
+
+竞品兼容模式按反编译证据中的 `ExtractionRule(minInterval=2.0, maxInterval=10.0, frameCount=7, maxFrameCount=13)` 生成时间点：
+
+```text
+duration <= 0 -> [0]
+7 帧等距间隔在 2s..10s 内 -> 0..duration 等距 7 帧
+7 帧等距间隔小于 2s -> 每 2s 抽一帧，并包含 duration
+7 帧等距间隔大于 10s -> 每 10s 抽一帧；如果超过 13 帧，则改为 0..duration 等距 13 帧
+```
+
+该规则与竞品反编译出的 `uh/b.java` 时间点生成一致：等距函数包含 0 和 duration，固定间隔函数从 0 开始并补上 duration。
 
 抽帧 API 分支：
 
@@ -549,17 +582,19 @@ ACCURATE:      [8%, 22%, 36%, 50%, 64%, 78%, 92%]
 | 27-29 | `getScaledFrameAtTime(timeUs, OPTION_CLOSEST_SYNC, 9, 8)` | 9x8 |
 | 23-26 | `getFrameAtTime(timeUs, OPTION_CLOSEST_SYNC)` 后 `Bitmap.createScaledBitmap(9, 8)` | 9x8 |
 
-抽帧失败或低信息帧会保留无效占位：
+抽帧失败会保留无效占位：
 
 ```kotlin
 CombinedHash(-1L, emptyArray())
 ```
 
-低信息帧判断基于 9x8 帧的亮度范围和平均相邻边缘差，纯黑、纯白、纯色或信息量极低的帧不会参与相似比较。比较时会跳过无效帧，但无效帧不会从列表中删除。
+普通模式会过滤低信息帧。判断基于 9x8 帧的亮度范围和平均相邻边缘差，纯黑、纯白、纯色或信息量极低的帧不会参与相似比较。比较时会跳过无效帧，但无效帧不会从列表中删除。
+
+`COMPETITOR_COMPAT` 不做低信息帧过滤，保持与竞品“抽到什么就进入帧序列”的口径一致，避免 Demo 因过滤黑屏/静态帧导致相似视频数量低于竞品。
 
 ## 14. 视频候选召回
 
-实时视频扫描不使用图片的 BK-Tree 索引。`processVideo()` 会先计算当前视频指纹，再从 SQLite 查候选：
+实时视频扫描不使用图片的 BK-Tree 索引。普通视频模式会先计算当前视频指纹，再从 SQLite 查候选：
 
 ```sql
 SELECT ...
@@ -593,6 +628,19 @@ aspectTolerance = 8
 
 候选召回只做粗筛。扫描器还会先执行帧级 dHash 汉明距离预筛：如果两段视频没有任意有效帧对落在当前媒体类型的最大候选距离内，就不会进入完整多帧精判。这个预筛不会改变最终阈值口径，最终仍由 `VideoFingerprint.isSimilarTo()` 决定。
 
+`COMPETITOR_COMPAT` 为了对齐竞品相似视频召回，不使用时长桶和宽高比桶过滤，只限定：
+
+```sql
+WHERE a.type = ?
+  AND a.state = 'ACTIVE'
+  AND a.fingerprint_algorithm_version = ?
+  AND a.id != ?
+  AND f.video_frame_hashes IS NOT NULL
+ORDER BY a.date_added DESC
+```
+
+也就是说竞品兼容模式采用“同类型、同算法版本宽召回 + 帧级预筛 + 多帧精判”。这会比普通模式召回更多候选，适合 Demo 对齐竞品结果；其他产品如果更看重性能和误召回控制，应继续使用 `BALANCED` 或 `ACCURATE`。
+
 ## 15. 视频/录屏相似判断
 
 视频和录屏使用与截图相同的严格阈值：
@@ -614,9 +662,12 @@ aspectTolerance = 8
 SYSTEM_THUMBNAIL
 HYBRID_THUMBNAIL_AND_FRAMES
 MMR_FRAMES
+COMPETITOR_FRAMES
 ```
 
 只有双方都是 `SYSTEM_THUMBNAIL` 且都只有一个有效帧时，才允许单帧相似直接判定视频相似。只要任一侧是混合帧或 MMR 多帧，就进入多帧匹配规则，避免单帧封面结果与多帧结果混用同一语义。
+
+`COMPETITOR_FRAMES` 有独立语义：双方都来自竞品兼容模式时，使用竞品式帧命中规则，不套用 Demo 普通多帧模式的“候选帧只能消费一次”和“命中位置间隔”约束。
 
 ### 15.2 多帧比较
 
@@ -644,6 +695,20 @@ MIN_MATCHED_FRAME_GAP = 2
 - 防止当前视频多个静态帧都命中候选视频同一张黑屏或片头。
 - 防止只靠开头连续两帧相似就把整段视频合并。
 - 降低录屏、静态 UI、重复转场导致的大组误合并。
+
+### 15.3 竞品兼容帧比较
+
+当双方 `source` 都是 `COMPETITOR_FRAMES`：
+
+```text
+requiredMatches = max(1, min(2, validFrameCountA, validFrameCountB))
+遍历 A 的每个有效帧
+-> 遍历 B 的每个有效帧
+-> 任意帧对 CombinedHash.isSimilarTo(kind) 通过就累计一次命中
+-> 命中数达到 requiredMatches 即判定相似
+```
+
+这与竞品 smali 中的视频阈值口径一致：正常至少 2 帧命中；当任一侧只有 1 个有效帧时降为 1 帧命中。该模式不要求候选帧唯一消费，也不要求命中帧位置间隔，因此召回会强于 Demo 普通多帧模式，误合并控制则弱一些。
 
 ## 16. Similar 分组重建
 
@@ -830,6 +895,8 @@ createdAt
 ## 20. 当前风险点
 
 - 视频 `FAST` 模式仍可能退化为系统缩略图单帧，适合速度优先场景；默认 `BALANCED` 已补充 MMR 时间点。
+- `COMPETITOR_COMPAT` 更接近竞品，会提高相似视频召回，但候选范围更宽、多帧比较更宽松，适合 Demo 对齐竞品，不建议作为所有产品的默认模式。
+- 图片和视频指纹计算并发后，metrics 中工作线程耗时是累加值，不等同于墙钟时间；对比性能时优先看 `scan=... elapsed=...`。
 - 图片指纹输入默认是最大边 256 的缩略图，不是原图。接入方调小 `imageFingerprintSize` 会提升速度但可能影响细节召回；调大则需要接受更高解码和像素遍历成本。
 - 截图关键词 `startsWith("screen_")` 较宽，可能误归类部分非截图图片。
 - 录屏关键词包含 `recording`、`capture`、`mirror`、`cast`，可能误归类部分普通视频。

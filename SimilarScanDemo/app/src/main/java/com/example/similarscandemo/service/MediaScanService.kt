@@ -12,6 +12,7 @@ import com.example.similarscandemo.MainActivity
 import com.clean.similarscan.api.SimilarScanObserver
 import com.clean.similarscan.api.SimilarScanRequest
 import com.clean.similarscan.api.SimilarScanSdk
+import com.clean.similarscan.api.VideoFingerprintMode
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -41,7 +42,10 @@ class MediaScanService : Service() {
             try {
                 runCatching {
                     scanClient.scan(
-                        request = SimilarScanRequest(forceFull = forceFull),
+                        request = SimilarScanRequest(
+                            forceFull = forceFull,
+                            videoFingerprintMode = VideoFingerprintMode.COMPETITOR_COMPAT
+                        ),
                         observer = SimilarScanObserver { progress ->
                             updateNotification(progress.message, progress.processedCount)
                             sendProgress(

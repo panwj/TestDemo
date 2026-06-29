@@ -24,6 +24,11 @@ data class VideoFingerprint(
 
         val validFrames = frames.filter(CombinedHash::isValid)
         val validOtherFrames = other.frames.filter(CombinedHash::isValid)
+        if (source == VideoFingerprintSource.COMPETITOR_FRAMES &&
+            other.source == VideoFingerprintSource.COMPETITOR_FRAMES
+        ) {
+            return isCompetitorCompatibleSimilar(validFrames, validOtherFrames, kind)
+        }
         val thisOnlyThumbnail = source == VideoFingerprintSource.SYSTEM_THUMBNAIL && validFrames.size == 1
         val otherOnlyThumbnail = other.source == VideoFingerprintSource.SYSTEM_THUMBNAIL && validOtherFrames.size == 1
         if (thisOnlyThumbnail || otherOnlyThumbnail) {
@@ -59,6 +64,27 @@ data class VideoFingerprint(
         return false
     }
 
+    private fun isCompetitorCompatibleSimilar(
+        validFrames: List<CombinedHash>,
+        validOtherFrames: List<CombinedHash>,
+        kind: MediaKind
+    ): Boolean {
+        val requiredMatches = maxOf(
+            1,
+            minOf(MIN_MATCHED_FRAME_COUNT, validFrames.size, validOtherFrames.size)
+        )
+        var remainingMatches = requiredMatches
+        validFrames.forEach { frame ->
+            validOtherFrames.forEach { candidate ->
+                if (frame.isSimilarTo(candidate, kind)) {
+                    remainingMatches--
+                    if (remainingMatches <= 0) return true
+                }
+            }
+        }
+        return false
+    }
+
     private fun hasEnoughSeparatedMatches(indexes: List<Int>): Boolean {
         if (indexes.size < MIN_MATCHED_FRAME_COUNT) return false
         val first = indexes.first()
@@ -74,5 +100,6 @@ data class VideoFingerprint(
 enum class VideoFingerprintSource {
     SYSTEM_THUMBNAIL,
     HYBRID_THUMBNAIL_AND_FRAMES,
-    MMR_FRAMES
+    MMR_FRAMES,
+    COMPETITOR_FRAMES
 }

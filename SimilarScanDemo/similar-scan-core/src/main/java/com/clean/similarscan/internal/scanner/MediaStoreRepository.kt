@@ -3,6 +3,7 @@ package com.clean.similarscan.internal.scanner
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
+import android.database.Cursor
 import android.os.Build
 import android.provider.MediaStore
 import com.clean.similarscan.internal.model.MediaAsset
@@ -27,17 +28,81 @@ class MediaStoreRepository(context: Context) {
         videoGenerationAfter: Long = 0L,
         onBatch: (List<MediaAsset>) -> Unit
     ) {
-        if (SimilarScanPermissionChecker.canReadImages(appContext)) {
+        val canReadImages = SimilarScanPermissionChecker.canReadImages(appContext)
+        val canReadVideos = SimilarScanPermissionChecker.canReadVideos(appContext)
+        if (canReadImages && canReadVideos) {
             /*
              * 不能静默吞掉 MediaStore 查询异常。全量扫描若只成功枚举一部分资源，
              * 后续“清理未出现记录”会把缓存中的合法结果误判为已删除。
              * 异常直接抛给前台服务，扫描游标也不会提前推进。
              */
+            forEachInterleavedMediaBatch(batchSize, imageGenerationAfter, videoGenerationAfter, onBatch)
+            return
+        }
+        if (canReadImages) {
             forEachImageBatch(batchSize, imageGenerationAfter, onBatch)
         }
-        if (SimilarScanPermissionChecker.canReadVideos(appContext)) {
+        if (canReadVideos) {
             forEachVideoBatch(batchSize, videoGenerationAfter, onBatch)
         }
+    }
+
+    private fun forEachInterleavedMediaBatch(
+        batchSize: Int,
+        imageGenerationAfter: Long,
+        videoGenerationAfter: Long,
+        onBatch: (List<MediaAsset>) -> Unit
+    ) {
+        val imageGenerationSelection = generationSelection(
+            MediaStore.Images.Media.GENERATION_MODIFIED,
+            imageGenerationAfter
+        )
+        val videoGenerationSelection = generationSelection(
+            MediaStore.Video.Media.GENERATION_MODIFIED,
+            videoGenerationAfter
+        )
+        resolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            imageProjection(),
+            "${MediaStore.Images.Media.SIZE} > 0${imageGenerationSelection.first}",
+            imageGenerationSelection.second,
+            "${MediaStore.Images.Media.DATE_ADDED} DESC"
+        ).useCursor { imageCursor ->
+            resolver.query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                videoProjection(),
+                "${MediaStore.Video.Media.SIZE} > 0${videoGenerationSelection.first}",
+                videoGenerationSelection.second,
+                "${MediaStore.Video.Media.DATE_ADDED} DESC"
+            ).useCursor { videoCursor ->
+                var imageHasNext = true
+                var videoHasNext = true
+                while (imageHasNext || videoHasNext) {
+                    if (imageHasNext) {
+                        imageHasNext = emitBatch(imageCursor, batchSize, ::imageFromCursor, onBatch)
+                    }
+                    if (videoHasNext) {
+                        videoHasNext = emitBatch(videoCursor, batchSize, ::videoFromCursor, onBatch)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun emitBatch(
+        cursor: Cursor,
+        batchSize: Int,
+        mapper: (Cursor) -> MediaAsset,
+        onBatch: (List<MediaAsset>) -> Unit
+    ): Boolean {
+        val batch = ArrayList<MediaAsset>(batchSize)
+        while (batch.size < batchSize && cursor.moveToNext()) {
+            batch += mapper(cursor)
+        }
+        if (batch.isNotEmpty()) {
+            onBatch(batch)
+        }
+        return batch.size == batchSize
     }
 
     private fun forEachImageBatch(

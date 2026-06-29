@@ -21,6 +21,13 @@ import com.clean.similarscan.internal.similarity.Threshold
 import com.clean.similarscan.internal.similarity.VideoFingerprint
 import com.clean.similarscan.internal.similarity.VideoFingerprintCalculator
 import com.clean.similarscan.internal.similarity.VideoFingerprintMode
+import com.clean.similarscan.internal.similarity.VideoFingerprintSource
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.UUID
 
 /**
@@ -44,6 +51,14 @@ internal class SimilarMediaScanner(context: Context) {
     private var visualHashCache: MutableMap<MediaKind, MutableMap<Long, CombinedHash>> = mutableMapOf()
     private val candidateIdsBuffer = ArrayList<Long>(256)
     private val candidateSeenBuffer = HashSet<Long>(256)
+    private val imageComputeExecutor = Executors.newFixedThreadPool(
+        IMAGE_COMPUTE_THREADS,
+        NamedThreadFactory("similar-image")
+    )
+    private val videoComputeExecutor = Executors.newFixedThreadPool(
+        VIDEO_COMPUTE_THREADS,
+        NamedThreadFactory("similar-video")
+    )
 
     fun scan(
         forceFull: Boolean = false,
@@ -84,6 +99,7 @@ internal class SimilarMediaScanner(context: Context) {
         val modeName = if (fullScan) "full" else "incremental"
         progress(ScanProgress(ScanStage.ENUMERATING, 0, database.groupCount(), "Starting $modeName MediaStore scan."))
         metrics.measure("enumerate_and_fingerprint_total") {
+            val pendingJobs = FingerprintJobScheduler()
             repository.forEachMediaBatch(
                 batchSize = BATCH_SIZE,
                 imageGenerationAfter = imageGenerationAfter,
@@ -133,21 +149,33 @@ internal class SimilarMediaScanner(context: Context) {
                         // 用户正在删除或资源状态已变化，本轮扫描跳过，不覆盖用户操作。
                         return@forEach
                     }
-                    if (asset.kind == MediaKind.VIDEO || asset.kind == MediaKind.SCREEN_RECORDING) {
-                        metrics.measure("process_video") { processVideo(token, asset, metrics, videoFingerprintMode) }
+                    val jobType = if (asset.kind == MediaKind.VIDEO || asset.kind == MediaKind.SCREEN_RECORDING) {
+                        FingerprintJobType.VIDEO
                     } else {
-                        metrics.measure("process_visual") {
-                            processVisual(
-                                token = token,
-                                asset = asset,
-                                metrics = metrics,
-                                imageFingerprintSize = imageFingerprintSize,
-                                calculateDuplicateSha256DuringScan = calculateDuplicateSha256DuringScan
-                            )
-                        }
+                        FingerprintJobType.IMAGE
+                    }
+                    while (!pendingJobs.hasCapacity(jobType)) {
+                        commitNextJob(
+                            pendingJobs,
+                            metrics,
+                            calculateDuplicateSha256DuringScan,
+                            videoFingerprintMode,
+                            preferredType = jobType
+                        )
+                    }
+                    if (jobType == FingerprintJobType.VIDEO) {
+                        pendingJobs.add(submitVideoJob(token, asset, metrics, videoFingerprintMode))
+                    } else {
+                        pendingJobs.add(submitVisualJob(token, asset, metrics, imageFingerprintSize))
                     }
                     fingerprinted++
                 }
+                commitCompletedJobs(
+                    pendingJobs,
+                    metrics,
+                    calculateDuplicateSha256DuringScan,
+                    videoFingerprintMode
+                )
 
                 progress(
                     ScanProgress(
@@ -156,6 +184,15 @@ internal class SimilarMediaScanner(context: Context) {
                         discoveredGroupCount = database.groupCount(),
                         message = "Scanned $visited assets. $fingerprinted updated, $skippedUnchanged reused."
                     )
+                )
+            }
+            while (pendingJobs.isNotEmpty()) {
+                commitNextJob(
+                    pendingJobs,
+                    metrics,
+                    calculateDuplicateSha256DuringScan,
+                    videoFingerprintMode,
+                    preferredType = null
                 )
             }
         }
@@ -210,19 +247,41 @@ internal class SimilarMediaScanner(context: Context) {
      * 扫描结束后必须显式关闭数据库连接，避免系统在 GC 时报告 SQLiteConnection 泄漏。
      */
     fun close() {
+        imageComputeExecutor.shutdownNow()
+        videoComputeExecutor.shutdownNow()
         database.close()
     }
 
-    private fun processVisual(
+    private fun submitVisualJob(
         token: AssetScanToken,
         asset: MediaAsset,
         metrics: ScanMetrics,
-        imageFingerprintSize: Int,
+        imageFingerprintSize: Int
+    ): PendingFingerprintJob {
+        return PendingFingerprintJob(
+            type = FingerprintJobType.IMAGE,
+            future = imageComputeExecutor.submit(Callable<ComputedFingerprint> {
+                metrics.measure("process_visual_compute") {
+                    VisualComputedFingerprint(
+                        token = token,
+                        asset = asset,
+                        visual = metrics.measure("build_visual_fingerprint") {
+                            buildVisualFingerprint(asset, metrics, imageFingerprintSize)
+                        }
+                    )
+                }
+            })
+        )
+    }
+
+    private fun commitVisualResult(
+        computed: VisualComputedFingerprint,
+        metrics: ScanMetrics,
         calculateDuplicateSha256DuringScan: Boolean
     ) {
-        val visual = metrics.measure("build_visual_fingerprint") {
-            buildVisualFingerprint(asset, metrics, imageFingerprintSize)
-        }
+        val token = computed.token
+        val asset = computed.asset
+        val visual = computed.visual
         if (visual == null || !visual.hash.isValid()) {
             database.markFingerprintFailed(token)
             return
@@ -306,28 +365,50 @@ internal class SimilarMediaScanner(context: Context) {
         visualHashCache.getValue(asset.kind)[token.assetId] = visual.hash
     }
 
-    private fun processVideo(
+    private fun submitVideoJob(
         token: AssetScanToken,
         asset: MediaAsset,
         metrics: ScanMetrics,
         videoFingerprintMode: VideoFingerprintMode
-    ) {
+    ): PendingFingerprintJob {
         /*
          * 视频不复用图片缩略图流程。两阶段 quick/full 在真机数据上会漏掉相似视频，
-         * 并且候选补算完整指纹会抵消节省的抽帧成本；这里恢复为单阶段 7 帧稳定识别。
+         * 并且候选补算完整指纹会抵消节省的抽帧成本；这里按请求的视频模式一次性
+         * 生成最终指纹，提交阶段再统一召回和精判候选。
          */
-        val fingerprint = metrics.measure("calculate_video_fingerprint") {
-            videoFingerprintCalculator.calculate(asset, videoFingerprintMode)
-        }
+        return PendingFingerprintJob(
+            type = FingerprintJobType.VIDEO,
+            future = videoComputeExecutor.submit(Callable<ComputedFingerprint> {
+                metrics.measure("process_video_compute") {
+                    VideoComputedFingerprint(
+                        token = token,
+                        asset = asset,
+                        fingerprint = metrics.measure("calculate_video_fingerprint") {
+                            videoFingerprintCalculator.calculate(asset, videoFingerprintMode)
+                        }
+                    )
+                }
+            })
+        )
+    }
+
+    private fun commitVideoResult(
+        computed: VideoComputedFingerprint,
+        metrics: ScanMetrics,
+        videoFingerprintMode: VideoFingerprintMode
+    ) {
+        val token = computed.token
+        val asset = computed.asset
+        val fingerprint = computed.fingerprint
         if (!fingerprint.isValid()) {
             metrics.increment("video_fingerprint_failed")
             database.markFingerprintFailed(token)
             return
         }
-        if (fingerprint.frames.size == 1) {
-            metrics.increment("video_system_thumbnail_fingerprint")
-        } else {
-            metrics.increment("video_mmr_fingerprint")
+        when (fingerprint.source) {
+            VideoFingerprintSource.SYSTEM_THUMBNAIL -> metrics.increment("video_system_thumbnail_fingerprint")
+            VideoFingerprintSource.COMPETITOR_FRAMES -> metrics.increment("video_competitor_fingerprint")
+            else -> metrics.increment("video_mmr_fingerprint")
         }
 
         val similarCandidates = metrics.measure("load_and_filter_video_candidates") {
@@ -345,6 +426,45 @@ internal class SimilarMediaScanner(context: Context) {
         }
         similarCandidates.forEach { candidate ->
             database.linkSimilarAssets(asset.kind, token.assetId, candidate.assetId)
+        }
+    }
+
+    private fun commitNextJob(
+        pendingJobs: FingerprintJobScheduler,
+        metrics: ScanMetrics,
+        calculateDuplicateSha256DuringScan: Boolean,
+        videoFingerprintMode: VideoFingerprintMode,
+        preferredType: FingerprintJobType?
+    ) {
+        val job = pendingJobs.removeNext(preferredType)
+        when (val result = job.await()) {
+            is VisualComputedFingerprint -> {
+                metrics.measure("process_visual") {
+                    commitVisualResult(result, metrics, calculateDuplicateSha256DuringScan)
+                }
+            }
+            is VideoComputedFingerprint -> {
+                metrics.measure("process_video") {
+                    commitVideoResult(result, metrics, videoFingerprintMode)
+                }
+            }
+        }
+    }
+
+    private fun commitCompletedJobs(
+        pendingJobs: FingerprintJobScheduler,
+        metrics: ScanMetrics,
+        calculateDuplicateSha256DuringScan: Boolean,
+        videoFingerprintMode: VideoFingerprintMode
+    ) {
+        while (pendingJobs.hasCompletedJob()) {
+            commitNextJob(
+                pendingJobs,
+                metrics,
+                calculateDuplicateSha256DuringScan,
+                videoFingerprintMode,
+                preferredType = null
+            )
         }
     }
 
@@ -419,6 +539,8 @@ internal class SimilarMediaScanner(context: Context) {
     companion object {
         private const val BATCH_SIZE = 500
         private const val MAX_GROUPS_TO_SHOW = Int.MAX_VALUE
+        private const val IMAGE_COMPUTE_THREADS = 4
+        private const val VIDEO_COMPUTE_THREADS = 2
         /*
          * dHash 最终只需要 9x8 采样，colorHash 是 8x3 颜色直方图。真机 9k 图片测试中，
          * MediaStore 缩略图读取是最大耗时点，因此扫描指纹统一压到 256：既保留足够颜色/
@@ -432,6 +554,116 @@ private data class VisualFingerprintResult(
     val hash: CombinedHash,
     val qualityScore: Double
 )
+
+private class PendingFingerprintJob(
+    val type: FingerprintJobType,
+    val future: Future<ComputedFingerprint>
+) {
+    fun await(): ComputedFingerprint {
+        return try {
+            future.get()
+        } catch (error: ExecutionException) {
+            throw error.cause ?: error
+        }
+    }
+}
+
+private enum class FingerprintJobType {
+    IMAGE,
+    VIDEO
+}
+
+private class FingerprintJobScheduler {
+    private val jobs = mutableListOf<PendingFingerprintJob>()
+    private var pendingImageCount = 0
+    private var pendingVideoCount = 0
+
+    fun isNotEmpty(): Boolean = jobs.isNotEmpty()
+
+    fun hasCapacity(type: FingerprintJobType): Boolean {
+        return pendingCount(type) < maxPendingCount(type)
+    }
+
+    fun add(job: PendingFingerprintJob) {
+        jobs += job
+        increment(job.type)
+    }
+
+    fun hasCompletedJob(): Boolean = jobs.any { it.future.isDone }
+
+    fun removeNext(preferredType: FingerprintJobType?): PendingFingerprintJob {
+        val completedIndex = jobs.indexOfFirst { it.future.isDone }
+        if (completedIndex >= 0) return removeAt(completedIndex)
+
+        val preferredIndex = preferredType?.let { type ->
+            jobs.indexOfFirst { it.type == type }.takeIf { it >= 0 }
+        }
+        return removeAt(preferredIndex ?: 0)
+    }
+
+    private fun pendingCount(type: FingerprintJobType): Int {
+        return when (type) {
+            FingerprintJobType.IMAGE -> pendingImageCount
+            FingerprintJobType.VIDEO -> pendingVideoCount
+        }
+    }
+
+    private fun maxPendingCount(type: FingerprintJobType): Int {
+        return when (type) {
+            FingerprintJobType.IMAGE -> MAX_PENDING_IMAGE_FINGERPRINT_JOBS
+            FingerprintJobType.VIDEO -> MAX_PENDING_VIDEO_FINGERPRINT_JOBS
+        }
+    }
+
+    private fun removeAt(index: Int): PendingFingerprintJob {
+        val job = jobs.removeAt(index)
+        decrement(job.type)
+        return job
+    }
+
+    private fun increment(type: FingerprintJobType) {
+        when (type) {
+            FingerprintJobType.IMAGE -> pendingImageCount++
+            FingerprintJobType.VIDEO -> pendingVideoCount++
+        }
+    }
+
+    private fun decrement(type: FingerprintJobType) {
+        when (type) {
+            FingerprintJobType.IMAGE -> pendingImageCount--
+            FingerprintJobType.VIDEO -> pendingVideoCount--
+        }
+    }
+
+    private companion object {
+        private const val MAX_PENDING_IMAGE_FINGERPRINT_JOBS = 640
+        private const val MAX_PENDING_VIDEO_FINGERPRINT_JOBS = 48
+    }
+}
+
+private sealed interface ComputedFingerprint
+
+private data class VisualComputedFingerprint(
+    val token: AssetScanToken,
+    val asset: MediaAsset,
+    val visual: VisualFingerprintResult?
+) : ComputedFingerprint
+
+private data class VideoComputedFingerprint(
+    val token: AssetScanToken,
+    val asset: MediaAsset,
+    val fingerprint: VideoFingerprint
+) : ComputedFingerprint
+
+private class NamedThreadFactory(private val prefix: String) : ThreadFactory {
+    private val nextId = AtomicInteger(1)
+
+    override fun newThread(runnable: Runnable): Thread {
+        return Thread(runnable, "$prefix-${nextId.getAndIncrement()}").apply {
+            isDaemon = true
+        }
+    }
+}
 
 private class ScanMetrics {
     private val totals = linkedMapOf<String, Long>()
@@ -453,24 +685,34 @@ private class ScanMetrics {
         skippedUnchanged: Int,
         elapsed: Long
     ) {
+        val totalsSnapshot: Map<String, Long>
+        val countsSnapshot: Map<String, Int>
+        synchronized(this) {
+            totalsSnapshot = totals.toMap()
+            countsSnapshot = counts.toMap()
+        }
         Log.d(
             TAG,
             "scan=$modeName elapsed=${elapsed}ms visited=$visited fingerprinted=$fingerprinted reused=$skippedUnchanged"
         )
-        totals.forEach { (name, duration) ->
+        totalsSnapshot.forEach { (name, duration) ->
             Log.d(TAG, "metric.$name=${duration}ms")
         }
-        counts.forEach { (name, count) ->
+        countsSnapshot.forEach { (name, count) ->
             Log.d(TAG, "count.$name=$count")
         }
     }
 
     private fun add(name: String, durationMs: Long) {
-        totals[name] = (totals[name] ?: 0L) + durationMs
+        synchronized(this) {
+            totals[name] = (totals[name] ?: 0L) + durationMs
+        }
     }
 
     fun increment(name: String) {
-        counts[name] = (counts[name] ?: 0) + 1
+        synchronized(this) {
+            counts[name] = (counts[name] ?: 0) + 1
+        }
     }
 
     companion object {

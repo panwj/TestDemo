@@ -200,7 +200,7 @@ client.scan(SimilarScanRequest(forceFull = true), observer)
 | `forceFull` | `false` | 是否强制全量扫描 |
 | `imageFingerprintSize` | `256` | 图片/截图指纹 Bitmap 最大边，SDK 会限制在 96..512 |
 | `calculateDuplicateSha256DuringScan` | `false` | 是否在扫描主链路中立即补算 Duplicate 候选的 SHA-256 |
-| `videoFingerprintMode` | `BALANCED` | 视频指纹模式：`FAST`、`BALANCED`、`ACCURATE` |
+| `videoFingerprintMode` | `BALANCED` | 视频指纹模式：`FAST`、`BALANCED`、`ACCURATE`、`COMPETITOR_COMPAT` |
 
 视频模式建议：
 
@@ -209,6 +209,9 @@ client.scan(SimilarScanRequest(forceFull = true), observer)
 | `FAST` | 速度优先、视频量大、可接受封面相似风险 | 系统缩略图单帧优先，失败时少量 MMR 帧 |
 | `BALANCED` | 默认推荐 | 系统缩略图 + 多个 MMR 时间点，避免完全单帧化 |
 | `ACCURATE` | 准确率优先、视频量可控 | 更多 MMR 时间点，不把系统缩略图作为唯一依据 |
+| `COMPETITOR_COMPAT` | Demo 对齐竞品结果 | 不使用系统缩略图，按竞品 7 到 13 帧规则抽帧，候选召回更宽，正常至少 2 帧命中 |
+
+Demo 当前为了与竞品扫描结果对齐，前台扫描服务显式传入 `VideoFingerprintMode.COMPETITOR_COMPAT`。其他产品不需要对齐竞品时建议保留默认 `BALANCED`，或按自身业务选择 `FAST` / `ACCURATE`。
 
 扫描阶段：
 
@@ -412,7 +415,10 @@ class MediaScanService : Service() {
             val client = SimilarScanSdk.create(applicationContext)
             try {
                 val result = client.scan(
-                    SimilarScanRequest(forceFull = forceFull),
+                    SimilarScanRequest(
+                        forceFull = forceFull,
+                        videoFingerprintMode = VideoFingerprintMode.BALANCED
+                    ),
                     SimilarScanObserver { progress ->
                         // update notification
                         // publish progress to UI
@@ -430,6 +436,15 @@ class MediaScanService : Service() {
         return START_NOT_STICKY
     }
 }
+```
+
+如果宿主就是 SimilarScanDemo，并且目标是复现竞品扫描口径，可以改为：
+
+```kotlin
+SimilarScanRequest(
+    forceFull = forceFull,
+    videoFingerprintMode = VideoFingerprintMode.COMPETITOR_COMPAT
+)
 ```
 
 宿主需要自己保证：
@@ -518,6 +533,7 @@ OTHER
 - 进度回调可能在扫描线程触发，宿主更新 UI 前需要切主线程。
 - 大图库初次冷扫耗时较长，建议使用前台服务和持续通知。
 - 增量扫描会复用未变化资源的旧指纹，二次扫描成本显著降低。
+- SDK 内部会并发计算图片和视频指纹，但数据库提交、BK-Tree 更新和分组写入仍串行执行；宿主仍然只应启动一个扫描任务。
 
 当前主要耗时通常在：
 
@@ -526,9 +542,10 @@ OTHER
 BK-Tree 候选查询
 SQLite 指纹写入
 Duplicate 候选 SHA-256 按需或延后计算
+视频多帧抽帧
 ```
 
-视频路径默认 `BALANCED`，会在系统缩略图之外补充 MMR 时间点；如果切到 `FAST`，识别效果仍会受单帧策略影响。
+视频路径默认 `BALANCED`，会在系统缩略图之外补充 MMR 时间点；如果切到 `FAST`，识别效果仍会受单帧策略影响。`COMPETITOR_COMPAT` 会提高相似视频召回，但候选范围和帧匹配规则更宽，性能和误合并风险要按产品目标评估。
 
 ## 15. 多产品接入建议
 

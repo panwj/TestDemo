@@ -15,8 +15,8 @@ import kotlin.math.abs
  *
  * 竞品 ExtractionRule 为：最小间隔 2、最大间隔 10、常规 7 帧、最多 13 帧。
  *
- * 当前产品策略优先复用系统视频缩略图；如果系统缩略图不可用，再回退到
- * 7 帧 MMR 抽帧，保证覆盖没有缓存的资源。
+ * FAST/BALANCED 优先利用系统缩略图降低成本；COMPETITOR_COMPAT 不混入系统
+ * 缩略图，按竞品 0..duration 的 7 到 13 帧规则生成指纹。
  */
 internal class VideoFingerprintCalculator(context: Context) {
     private val appContext = context.applicationContext
@@ -25,12 +25,15 @@ internal class VideoFingerprintCalculator(context: Context) {
         asset: MediaAsset,
         mode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
     ): VideoFingerprint {
-        val thumbnailHash = systemVideoThumbnail(asset)?.let { thumbnail ->
+        val shouldLoadSystemThumbnail = mode != VideoFingerprintMode.COMPETITOR_COMPAT
+        val thumbnailHash = if (shouldLoadSystemThumbnail) systemVideoThumbnail(asset)?.let { thumbnail ->
             try {
                 HashCalculator.buildHash(thumbnail)
             } finally {
                 thumbnail.recycle()
             }
+        } else {
+            null
         }
         if (mode == VideoFingerprintMode.FAST && thumbnailHash?.isValid() == true) {
             return VideoFingerprint(
@@ -72,7 +75,11 @@ internal class VideoFingerprintCalculator(context: Context) {
                     hashes += INVALID_HASH
                 } else {
                     try {
-                        hashes += if (isLowInformationFrame(frame)) INVALID_HASH else HashCalculator.buildHash(frame)
+                        hashes += if (mode.shouldFilterLowInformationFrames() && isLowInformationFrame(frame)) {
+                            INVALID_HASH
+                        } else {
+                            HashCalculator.buildHash(frame)
+                        }
                         /*
                          * 视频抽出的帧已经是 9x8 小图，质量分只做元数据排序兜底。
                          * 对这种小图再做 64x64 放大采样没有意义，也会放大扫描成本。
@@ -193,8 +200,56 @@ internal class VideoFingerprintCalculator(context: Context) {
             VideoFingerprintMode.FAST -> FAST_FALLBACK_POSITIONS
             VideoFingerprintMode.BALANCED -> BALANCED_POSITIONS
             VideoFingerprintMode.ACCURATE -> ACCURATE_POSITIONS
+            VideoFingerprintMode.COMPETITOR_COMPAT -> return buildCompetitorSampleTimes(durationMs)
         }
         return positions.map { durationMs * it }.distinct()
+    }
+
+    private fun buildCompetitorSampleTimes(durationMs: Double): List<Double> {
+        val duration = durationMs.toLong().coerceAtLeast(0L)
+        if (duration <= 0L) return listOf(0.0)
+        val sevenFrameInterval = duration.toDouble() / (COMPETITOR_FRAME_COUNT - 1).toDouble()
+        val times = when {
+            sevenFrameInterval in COMPETITOR_MIN_INTERVAL_MS..COMPETITOR_MAX_INTERVAL_MS -> {
+                buildEvenlySpacedTimes(duration, COMPETITOR_FRAME_COUNT)
+            }
+            sevenFrameInterval < COMPETITOR_MIN_INTERVAL_MS -> {
+                buildIntervalTimes(duration, COMPETITOR_MIN_INTERVAL_MS.toLong())
+            }
+            else -> {
+                buildIntervalTimes(duration, COMPETITOR_MAX_INTERVAL_MS.toLong())
+                    .let { times ->
+                        if (times.size <= COMPETITOR_MAX_FRAME_COUNT) {
+                            times
+                        } else {
+                            buildEvenlySpacedTimes(duration, COMPETITOR_MAX_FRAME_COUNT)
+                        }
+                    }
+            }
+        }
+        return times.distinct().map(Long::toDouble)
+    }
+
+    private fun buildEvenlySpacedTimes(durationMs: Long, frameCount: Int): List<Long> {
+        val count = frameCount.coerceAtLeast(2)
+        val interval = durationMs.toDouble() / (count - 1).toDouble()
+        return (0 until count).map { index ->
+            kotlin.math.round(index * interval).toLong().coerceAtMost(durationMs)
+        }
+    }
+
+    private fun buildIntervalTimes(durationMs: Long, intervalMs: Long): List<Long> {
+        val safeInterval = intervalMs.coerceAtLeast(1L)
+        val times = ArrayList<Long>()
+        var time = 0L
+        while (time < durationMs) {
+            times += time
+            time += safeInterval
+        }
+        if (times.isEmpty() || times.last() != durationMs) {
+            times += durationMs
+        }
+        return times
     }
 
     private fun extractFrame(retriever: MediaMetadataRetriever, timeUs: Long): Bitmap? {
@@ -290,10 +345,15 @@ internal class VideoFingerprintCalculator(context: Context) {
             validFrameCount
         }
         return when {
+            mode == VideoFingerprintMode.COMPETITOR_COMPAT -> VideoFingerprintSource.COMPETITOR_FRAMES
             hasSystemThumbnail && validMmrFrameCount == 0 -> VideoFingerprintSource.SYSTEM_THUMBNAIL
             hasSystemThumbnail && mode == VideoFingerprintMode.BALANCED -> VideoFingerprintSource.HYBRID_THUMBNAIL_AND_FRAMES
             else -> VideoFingerprintSource.MMR_FRAMES
         }
+    }
+
+    private fun VideoFingerprintMode.shouldFilterLowInformationFrames(): Boolean {
+        return this != VideoFingerprintMode.COMPETITOR_COMPAT
     }
 
     private fun invalidFingerprint() = VideoFingerprint(
@@ -308,6 +368,10 @@ internal class VideoFingerprintCalculator(context: Context) {
         const val HASH_HEIGHT = 8
         const val LOW_INFORMATION_LUMA_RANGE = 8
         const val LOW_INFORMATION_EDGE_AVERAGE = 2.0
+        const val COMPETITOR_FRAME_COUNT = 7
+        const val COMPETITOR_MAX_FRAME_COUNT = 13
+        const val COMPETITOR_MIN_INTERVAL_MS = 2_000.0
+        const val COMPETITOR_MAX_INTERVAL_MS = 10_000.0
         val FAST_FALLBACK_POSITIONS = listOf(0.10, 0.50, 0.90)
         val BALANCED_POSITIONS = listOf(0.12, 0.38, 0.64, 0.88)
         val ACCURATE_POSITIONS = listOf(0.08, 0.22, 0.36, 0.50, 0.64, 0.78, 0.92)
