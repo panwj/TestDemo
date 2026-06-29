@@ -8,6 +8,7 @@ import android.provider.MediaStore
 import android.util.Size
 import com.clean.similarscan.internal.model.MediaAsset
 import java.io.File
+import kotlin.math.abs
 
 /**
  * 按竞品规则提取视频多帧指纹。
@@ -17,37 +18,52 @@ import java.io.File
  * 当前产品策略优先复用系统视频缩略图；如果系统缩略图不可用，再回退到
  * 7 帧 MMR 抽帧，保证覆盖没有缓存的资源。
  */
-class VideoFingerprintCalculator(context: Context) {
+internal class VideoFingerprintCalculator(context: Context) {
     private val appContext = context.applicationContext
 
-    fun calculate(asset: MediaAsset): VideoFingerprint {
-        systemVideoThumbnail(asset)?.let { thumbnail ->
-            return try {
-                VideoFingerprint(
-                    frames = listOf(HashCalculator.buildHash(thumbnail)),
-                    qualityScore = MediaQualityAnalyzer.metadataScore(asset)
-                )
+    fun calculate(
+        asset: MediaAsset,
+        mode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+    ): VideoFingerprint {
+        val thumbnailHash = systemVideoThumbnail(asset)?.let { thumbnail ->
+            try {
+                HashCalculator.buildHash(thumbnail)
             } finally {
                 thumbnail.recycle()
             }
         }
-
-        val path = mediaPath(asset) ?: return invalidFingerprint()
-        val file = File(path)
-        if (!file.exists() || !file.canRead()) return invalidFingerprint()
+        if (mode == VideoFingerprintMode.FAST && thumbnailHash?.isValid() == true) {
+            return VideoFingerprint(
+                frames = listOf(thumbnailHash),
+                qualityScore = MediaQualityAnalyzer.metadataScore(asset),
+                source = VideoFingerprintSource.SYSTEM_THUMBNAIL
+            )
+        }
 
         val retriever = MediaMetadataRetriever()
         return try {
-            // 竞品只接受 DATA 真实路径，不在路径失败时回退 content URI。
-            retriever.setDataSource(path)
+            if (!setRetrieverDataSource(retriever, asset)) {
+                return if (thumbnailHash?.isValid() == true) {
+                    VideoFingerprint(
+                        frames = listOf(thumbnailHash),
+                        qualityScore = MediaQualityAnalyzer.metadataScore(asset),
+                        source = VideoFingerprintSource.SYSTEM_THUMBNAIL
+                    )
+                } else {
+                    invalidFingerprint()
+                }
+            }
             val durationMs = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toDoubleOrNull()
                 ?.takeIf { it > 0.0 }
                 ?: asset.duration.toDouble()
-            val sampleTimesMs = buildSampleTimes(durationMs)
-            val hashes = ArrayList<CombinedHash>(sampleTimesMs.size)
-            var qualityScore = 0.0
+            val sampleTimesMs = buildSampleTimes(durationMs, mode)
+            val hashes = ArrayList<CombinedHash>(sampleTimesMs.size + 1)
+            if (thumbnailHash?.isValid() == true && mode == VideoFingerprintMode.BALANCED) {
+                hashes += thumbnailHash
+            }
+            var qualityScore = MediaQualityAnalyzer.metadataScore(asset)
 
             sampleTimesMs.forEach { timeMs ->
                 val frame = extractFrame(retriever, (timeMs * MICROSECONDS_PER_MILLISECOND).toLong())
@@ -56,7 +72,7 @@ class VideoFingerprintCalculator(context: Context) {
                     hashes += INVALID_HASH
                 } else {
                     try {
-                        hashes += HashCalculator.buildHash(frame)
+                        hashes += if (isLowInformationFrame(frame)) INVALID_HASH else HashCalculator.buildHash(frame)
                         /*
                          * 视频抽出的帧已经是 9x8 小图，质量分只做元数据排序兜底。
                          * 对这种小图再做 64x64 放大采样没有意义，也会放大扫描成本。
@@ -67,12 +83,26 @@ class VideoFingerprintCalculator(context: Context) {
                     }
                 }
             }
+            val source = videoFingerprintSource(
+                frames = hashes,
+                hasSystemThumbnail = thumbnailHash?.isValid() == true,
+                mode = mode
+            )
             VideoFingerprint(
                 frames = hashes.ifEmpty { listOf(INVALID_HASH) },
-                qualityScore = qualityScore
+                qualityScore = qualityScore,
+                source = source
             )
         } catch (_: RuntimeException) {
-            invalidFingerprint()
+            if (thumbnailHash?.isValid() == true) {
+                VideoFingerprint(
+                    frames = listOf(thumbnailHash),
+                    qualityScore = MediaQualityAnalyzer.metadataScore(asset),
+                    source = VideoFingerprintSource.SYSTEM_THUMBNAIL
+                )
+            } else {
+                invalidFingerprint()
+            }
         } finally {
             runCatching { retriever.release() }
         }
@@ -126,21 +156,45 @@ class VideoFingerprintCalculator(context: Context) {
         }
     }
 
+    private fun setRetrieverDataSource(
+        retriever: MediaMetadataRetriever,
+        asset: MediaAsset
+    ): Boolean {
+        mediaPath(asset)?.let { path ->
+            val file = File(path)
+            if (file.exists() && file.canRead()) {
+                return try {
+                    retriever.setDataSource(path)
+                    true
+                } catch (_: RuntimeException) {
+                    false
+                }
+            }
+        }
+        return try {
+            appContext.contentResolver.openFileDescriptor(asset.uri, "r")?.use { fd ->
+                retriever.setDataSource(fd.fileDescriptor)
+                true
+            } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     /**
      * 使用 7 帧等距采样覆盖完整时间轴。
      *
      * 3 帧 quick 预筛在真实数据上会漏掉相似视频；13 帧完整规则成本又过高。
      * 当前选择 7 帧作为稳定折中：比 quick 有更好的召回，比 13 帧少接近一半抽帧。
      */
-    private fun buildSampleTimes(durationMs: Double): List<Double> {
+    private fun buildSampleTimes(durationMs: Double, mode: VideoFingerprintMode): List<Double> {
         if (durationMs <= 0.0) return listOf(0.0)
-        return evenlySpaced(durationMs, NORMAL_FRAME_COUNT)
-    }
-
-    private fun evenlySpaced(durationMs: Double, count: Int): List<Double> {
-        if (count <= 1) return listOf(0.0)
-        val interval = durationMs / (count - 1)
-        return List(count) { index -> minOf(durationMs, interval * index) }
+        val positions = when (mode) {
+            VideoFingerprintMode.FAST -> FAST_FALLBACK_POSITIONS
+            VideoFingerprintMode.BALANCED -> BALANCED_POSITIONS
+            VideoFingerprintMode.ACCURATE -> ACCURATE_POSITIONS
+        }
+        return positions.map { durationMs * it }.distinct()
     }
 
     private fun extractFrame(retriever: MediaMetadataRetriever, timeUs: Long): Bitmap? {
@@ -195,14 +249,68 @@ class VideoFingerprintCalculator(context: Context) {
         }
     }
 
-    private fun invalidFingerprint() = VideoFingerprint(listOf(INVALID_HASH))
+    private fun isLowInformationFrame(bitmap: Bitmap): Boolean {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width <= 0 || height <= 0) return true
+        var minLuma = 255
+        var maxLuma = 0
+        var edgeEnergy = 0L
+        var previous = -1
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val luma = luminance(bitmap.getPixel(x, y))
+                minLuma = minOf(minLuma, luma)
+                maxLuma = maxOf(maxLuma, luma)
+                if (previous >= 0) edgeEnergy += abs(luma - previous)
+                previous = luma
+            }
+        }
+        val range = maxLuma - minLuma
+        val averageEdge = edgeEnergy.toDouble() / maxOf(1, width * height - 1)
+        return range < LOW_INFORMATION_LUMA_RANGE && averageEdge < LOW_INFORMATION_EDGE_AVERAGE
+    }
+
+    private fun luminance(pixel: Int): Int {
+        val red = (pixel shr 16) and 0xFF
+        val green = (pixel shr 8) and 0xFF
+        val blue = pixel and 0xFF
+        return (red * 299 + green * 587 + blue * 114) / 1000
+    }
+
+    private fun videoFingerprintSource(
+        frames: List<CombinedHash>,
+        hasSystemThumbnail: Boolean,
+        mode: VideoFingerprintMode
+    ): VideoFingerprintSource {
+        val validFrameCount = frames.count(CombinedHash::isValid)
+        val validMmrFrameCount = if (hasSystemThumbnail && mode == VideoFingerprintMode.BALANCED) {
+            frames.drop(1).count(CombinedHash::isValid)
+        } else {
+            validFrameCount
+        }
+        return when {
+            hasSystemThumbnail && validMmrFrameCount == 0 -> VideoFingerprintSource.SYSTEM_THUMBNAIL
+            hasSystemThumbnail && mode == VideoFingerprintMode.BALANCED -> VideoFingerprintSource.HYBRID_THUMBNAIL_AND_FRAMES
+            else -> VideoFingerprintSource.MMR_FRAMES
+        }
+    }
+
+    private fun invalidFingerprint() = VideoFingerprint(
+        frames = listOf(INVALID_HASH),
+        source = VideoFingerprintSource.MMR_FRAMES
+    )
 
     private companion object {
-        const val NORMAL_FRAME_COUNT = 7
         const val MICROSECONDS_PER_MILLISECOND = 1_000.0
         const val SYSTEM_THUMBNAIL_SIZE = 512
         const val HASH_WIDTH = 9
         const val HASH_HEIGHT = 8
+        const val LOW_INFORMATION_LUMA_RANGE = 8
+        const val LOW_INFORMATION_EDGE_AVERAGE = 2.0
+        val FAST_FALLBACK_POSITIONS = listOf(0.10, 0.50, 0.90)
+        val BALANCED_POSITIONS = listOf(0.12, 0.38, 0.64, 0.88)
+        val ACCURATE_POSITIONS = listOf(0.08, 0.22, 0.36, 0.50, 0.64, 0.78, 0.92)
         val INVALID_HASH = CombinedHash(-1L, emptyArray())
     }
 }

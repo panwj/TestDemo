@@ -167,13 +167,13 @@ client.recoverStaleDeletePending()
 
 ## 当前实现要点
 
-- 图片/截图扫描指纹使用最大边 256 的 Bitmap，优先系统缩略图，失败后 URI/DATA 降采样解码。
+- 图片/截图扫描指纹默认使用最大边 256 的 Bitmap，可通过 `SimilarScanRequest.imageFingerprintSize` 配置，优先系统缩略图，失败后 URI/DATA 降采样解码。
 - 图片指纹为 `CombinedHash = 64-bit dHash + RGB 8x3 colorHash`。
 - 照片和截图分别维护 BK-Tree，BK-Tree 只做 dHash 候选召回。
 - `assetId -> CombinedHash` 内存缓存用于候选精判，避免大量回库读取 colorHash。
-- Duplicate 使用图片/截图的 duplicateReference 规则，SHA-256 是按需缓存的字节级证据，不是进入 Duplicate 的硬条件。
+- Duplicate 使用图片/截图的 duplicateReference 规则，SHA-256 是可延后缓存的字节级证据，不是进入 Duplicate 的硬条件；默认不阻塞扫描主链路。
 - Similar 最终按锚点直连规则重建，不使用相似关系传递闭包。
-- 视频/录屏优先系统视频缩略图单帧指纹；系统缩略图失败时回退 DATA 路径 + MMR 7 帧等距抽帧。
-- 视频候选先按类型、时长桶、宽高比桶收窄，最终仍走帧级 `dHash + colorHash` 精判。
+- 视频/录屏支持 `FAST`、`BALANCED`、`ACCURATE` 三档指纹模式；默认 `BALANCED` 使用系统缩略图 + 多个 MMR 时间点，避免完全退化为单帧封面相似。
+- 视频候选先按类型、时长桶、宽高比桶收窄，再做帧级汉明预筛，最终仍走完整帧级 `dHash + colorHash` 精判。
 
 详细算法和风险点见 [核心技术方案](docs/core-technical-design.md)。

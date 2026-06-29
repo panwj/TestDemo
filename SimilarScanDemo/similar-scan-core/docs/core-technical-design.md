@@ -176,29 +176,29 @@ isEdited
 
 ## 6. 图片/截图指纹 Bitmap 来源
 
-图片和截图的指纹输入由 `MediaBitmapLoader.loadFingerprintBitmapWithSource()` 完成，扫描链路传入的目标尺寸是：
+图片和截图的指纹输入由 `MediaBitmapLoader.loadFingerprintBitmapWithSource()` 完成。扫描链路默认目标尺寸是 256，接入方可以通过 `SimilarScanRequest.imageFingerprintSize` 配置，SDK 会将该值限制在 96..512。
 
 ```kotlin
-FINGERPRINT_BITMAP_SIZE = 256
+DEFAULT_IMAGE_FINGERPRINT_SIZE = 256
 ```
 
 加载顺序：
 
 ```text
-API 29+ ContentResolver.loadThumbnail(asset.uri, Size(256, 256), null)
+API 29+ ContentResolver.loadThumbnail(asset.uri, Size(imageFingerprintSize, imageFingerprintSize), null)
 -> legacy MediaStore.Images.Thumbnails.getThumbnail(..., MINI_KIND, null)
 -> resolver.openInputStream(asset.uri) + BitmapFactory inSampleSize decode
 -> 查询 MediaStore.MediaColumns.DATA
 -> BitmapFactory.decodeFile(path, options)
--> normalizeFingerprintBitmap(bitmap, 256)
+-> normalizeFingerprintBitmap(bitmap, imageFingerprintSize)
 ```
 
 `normalizeFingerprintBitmap()` 只做等比缩放：
 
 ```text
 maxSide = max(width, height)
-if maxSide <= 256: 原样返回
-scale = 256 / maxSide
+if maxSide <= imageFingerprintSize: 原样返回
+scale = imageFingerprintSize / maxSide
 targetWidth = width * scale
 targetHeight = height * scale
 Bitmap.createScaledBitmap(filter = true)
@@ -431,14 +431,14 @@ isEdited 相同
 dHash 完全相同
 ```
 
-找到 duplicateReference 候选后，SDK 会按需计算并缓存 SHA-256：
+找到 duplicateReference 候选后，SDK 可以按需计算并缓存 SHA-256：
 
 ```text
 当前资源 content_sha256
 候选资源 content_sha256
 ```
 
-SHA-256 不是进入 Duplicate 的硬条件，而是字节级验证证据，用来区分“字节完全一致”和“竞品组合引用一致”。
+SHA-256 不是进入 Duplicate 的硬条件，而是字节级验证证据，用来区分“字节完全一致”和“竞品组合引用一致”。当前默认 `calculateDuplicateSha256DuringScan = false`，不会在扫描主链路中读全文件；接入方如需扫描时立即补证据，可以在 `SimilarScanRequest` 中开启。
 
 Duplicate 优先级高于 Similar：
 
@@ -451,10 +451,10 @@ Duplicate 优先级高于 Similar：
 `processVisual()` 的实际步骤：
 
 ```text
-loadFingerprintBitmapWithSource(asset, 256)
+loadFingerprintBitmapWithSource(asset, imageFingerprintSize)
 -> HashCalculator.buildHash(bitmap)
 -> findDuplicateReferenceCandidates()
--> 有 Duplicate 候选时计算当前资源 SHA-256
+-> 可选：有 Duplicate 候选且配置开启时计算 SHA-256
 -> BK-Tree query(imageHash, Threshold.maxCandidateDistance(kind))
 -> 用 visualHashCache 做 dHash + colorHash 精判
 -> markFingerprintDone(token, hash, asset, sha256, qualityScore)
@@ -472,14 +472,15 @@ loadFingerprintBitmapWithSource(asset, 256)
 
 视频和录屏由 `VideoFingerprintCalculator.calculate()` 生成 `VideoFingerprint`。
 
-当前源码的真实策略是：
+当前源码通过 `SimilarScanRequest.videoFingerprintMode` 控制视频指纹策略：
 
 ```text
-优先系统视频缩略图 -> 单帧指纹
-系统缩略图失败 -> DATA 真实路径 + MediaMetadataRetriever 7 帧指纹
+FAST     -> 系统缩略图单帧优先，失败时 MMR 3 个时间点
+BALANCED -> 系统缩略图 + MMR 4 个时间点，默认策略
+ACCURATE -> MMR 7 个时间点，不把系统缩略图作为唯一依据
 ```
 
-### 13.1 系统缩略图单帧路径
+### 13.1 系统缩略图路径
 
 先调用 `systemVideoThumbnail(asset)`。
 
@@ -500,26 +501,27 @@ MediaStore.Video.Thumbnails.getThumbnail(
 )
 ```
 
-如果成功：
+如果成功，`FAST` 模式会直接保存单帧指纹：
 
 ```kotlin
 VideoFingerprint(
     frames = listOf(HashCalculator.buildHash(thumbnail)),
-    qualityScore = MediaQualityAnalyzer.metadataScore(asset)
+    qualityScore = MediaQualityAnalyzer.metadataScore(asset),
+    source = SYSTEM_THUMBNAIL
 )
 ```
 
-这意味着命中系统缩略图的视频会保存单帧指纹。它能显著降低扫描成本，但视频相似能力会退化为单帧画面相似。
+`BALANCED` 模式不会只依赖单帧缩略图，而是把系统缩略图作为第一帧，再补充 MMR 时间点。这样比纯 MMR 快，同时避免视频结果完全退化为封面相似。
 
-### 13.2 MMR 7 帧路径
+### 13.2 MMR 抽帧路径
 
-系统视频缩略图失败后，SDK 查询 DATA 真实路径：
+需要 MMR 抽帧时，SDK 优先查询 DATA 真实路径：
 
 ```text
 query(asset.uri, MediaStore.MediaColumns.DATA)
 ```
 
-如果路径为空、文件不存在或不可读，返回无效指纹。当前不会回退到 `content://` URI 或 `FileDescriptor`。
+如果路径为空、文件不存在或不可读，会回退 `ContentResolver.openFileDescriptor(asset.uri, "r")`，再调用 `MediaMetadataRetriever.setDataSource(fileDescriptor)`。两者都失败时，才返回无效指纹或退回系统缩略图单帧。
 
 路径可用时：
 
@@ -531,12 +533,12 @@ MediaMetadataRetriever.setDataSource(path)
 -> 每帧 HashCalculator.buildHash()
 ```
 
-当前 `buildSampleTimes()` 固定生成 7 个等距点：
+当前抽帧时间点避开绝对首尾，减少黑屏、片头、尾帧对结果的影响：
 
 ```text
-NORMAL_FRAME_COUNT = 7
-interval = durationMs / 6
-times = [0, interval, 2*interval, ... durationMs]
+FAST fallback: [10%, 50%, 90%]
+BALANCED:      [12%, 38%, 64%, 88%]
+ACCURATE:      [8%, 22%, 36%, 50%, 64%, 78%, 92%]
 ```
 
 抽帧 API 分支：
@@ -547,13 +549,13 @@ times = [0, interval, 2*interval, ... durationMs]
 | 27-29 | `getScaledFrameAtTime(timeUs, OPTION_CLOSEST_SYNC, 9, 8)` | 9x8 |
 | 23-26 | `getFrameAtTime(timeUs, OPTION_CLOSEST_SYNC)` 后 `Bitmap.createScaledBitmap(9, 8)` | 9x8 |
 
-抽帧失败时保留无效占位：
+抽帧失败或低信息帧会保留无效占位：
 
 ```kotlin
 CombinedHash(-1L, emptyArray())
 ```
 
-比较时会跳过无效帧，但无效帧不会从列表中删除。
+低信息帧判断基于 9x8 帧的亮度范围和平均相邻边缘差，纯黑、纯白、纯色或信息量极低的帧不会参与相似比较。比较时会跳过无效帧，但无效帧不会从列表中删除。
 
 ## 14. 视频候选召回
 
@@ -589,7 +591,7 @@ durationTolerance = max(2, durationBucket / 10)
 aspectTolerance = 8
 ```
 
-候选召回只做粗筛，最终仍由 `VideoFingerprint.isSimilarTo()` 精判。
+候选召回只做粗筛。扫描器还会先执行帧级 dHash 汉明距离预筛：如果两段视频没有任意有效帧对落在当前媒体类型的最大候选距离内，就不会进入完整多帧精判。这个预筛不会改变最终阈值口径，最终仍由 `VideoFingerprint.isSimilarTo()` 决定。
 
 ## 15. 视频/录屏相似判断
 
@@ -604,16 +606,17 @@ aspectTolerance = 8
 
 `VideoFingerprint.isSimilarTo(other, kind)` 先检查双方是否至少有一个有效帧。无有效帧则不相似。
 
-### 15.1 单帧比较
+### 15.1 单帧语义
 
-如果任一侧只有一个有效帧：
+当前 `VideoFingerprint` 会持久化来源：
 
 ```text
-任意有效帧对满足 CombinedHash.isSimilarTo(kind)
--> 视频相似
+SYSTEM_THUMBNAIL
+HYBRID_THUMBNAIL_AND_FRAMES
+MMR_FRAMES
 ```
 
-这个分支主要服务系统视频缩略图单帧路径。虽然是单帧，但仍使用 VIDEO 或 SCREEN_RECORDING 的严格阈值。
+只有双方都是 `SYSTEM_THUMBNAIL` 且都只有一个有效帧时，才允许单帧相似直接判定视频相似。只要任一侧是混合帧或 MMR 多帧，就进入多帧匹配规则，避免单帧封面结果与多帧结果混用同一语义。
 
 ### 15.2 多帧比较
 
@@ -826,9 +829,9 @@ createdAt
 
 ## 20. 当前风险点
 
-- 视频优先系统缩略图单帧。该策略速度更好，但命中系统缩略图时会退化成单帧相似，不等价于全量 7 帧视频识别。
-- 图片指纹输入是最大边 256 的缩略图，不是原图。细节差异很小的图片可能受缩略图质量影响。
+- 视频 `FAST` 模式仍可能退化为系统缩略图单帧，适合速度优先场景；默认 `BALANCED` 已补充 MMR 时间点。
+- 图片指纹输入默认是最大边 256 的缩略图，不是原图。接入方调小 `imageFingerprintSize` 会提升速度但可能影响细节召回；调大则需要接受更高解码和像素遍历成本。
 - 截图关键词 `startsWith("screen_")` 较宽，可能误归类部分非截图图片。
 - 录屏关键词包含 `recording`、`capture`、`mirror`、`cast`，可能误归类部分普通视频。
-- Duplicate 不要求 SHA-256 一致，SHA-256 仅为证据字段。这符合当前 duplicateReference 口径，但比字节级重复更宽。
+- Duplicate 不要求 SHA-256 一致，SHA-256 默认延后计算且仅为证据字段。这符合当前 duplicateReference 口径，但比字节级重复更宽。
 - 外部系统相册删除主要依赖全量扫描对账，增量扫描期间旧记录可能暂时保留。

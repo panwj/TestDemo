@@ -14,6 +14,8 @@ import com.clean.similarscan.internal.similarity.CombinedHash
 import com.clean.similarscan.internal.similarity.HammingBkTree
 import com.clean.similarscan.internal.similarity.Threshold
 import com.clean.similarscan.internal.similarity.VideoFingerprint
+import com.clean.similarscan.internal.similarity.VideoFingerprintMode
+import com.clean.similarscan.internal.similarity.VideoFingerprintSource
 import com.clean.similarscan.internal.util.FormatUtils
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -24,7 +26,7 @@ import java.util.Locale
  *
  * Demo 使用 SQLiteOpenHelper 保持依赖最少；正式项目可平滑替换为 Room。
  */
-class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
+internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     init {
         /*
          * 扫描服务会持续写库，详情页/首页会同时读库。WAL 允许读写并发，减少
@@ -95,7 +97,8 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                 video_frame_colors TEXT,
                 content_sha256 TEXT,
                 quality_score REAL NOT NULL DEFAULT 0,
-                potential_identifier TEXT
+                potential_identifier TEXT,
+                video_fingerprint_source TEXT
             )
             """.trimIndent()
         )
@@ -172,10 +175,16 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
      * 如果签名、算法版本和 fingerprint 记录都存在且一致，本轮只更新 last_seen_scan，
      * 扫描器会跳过 bitmap 解码、dHash/colorHash 和视频抽帧，避免全量校验时重复计算。
      */
-    fun upsertAsset(asset: MediaAsset, scanToken: String = ""): AssetScanToken? {
+    fun upsertAsset(
+        asset: MediaAsset,
+        scanToken: String = "",
+        imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
+        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+    ): AssetScanToken? {
         val db = writableDatabase
         val existingId = findAssetId(asset.id, asset.kind)
         val sourceSignature = SourceSignature.from(asset)
+        val algorithmVersion = fingerprintAlgorithmVersion(asset.kind, imageFingerprintSize, videoFingerprintMode)
         val values = ContentValues().apply {
             put("media_store_id", asset.id)
             put("uri", asset.uri.toString())
@@ -199,14 +208,14 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             put("last_scanned_at", System.currentTimeMillis())
             put("last_seen_scan", scanToken)
             put("source_signature", sourceSignature)
-            put("fingerprint_algorithm_version", FINGERPRINT_ALGORITHM_VERSION)
+            put("fingerprint_algorithm_version", algorithmVersion)
         }
         if (existingId != null) {
             val current = assetStateRevisionAndFingerprint(existingId) ?: return null
             if (current.state == "DELETE_PENDING" || current.state == "DELETED") return null
             val canReuseFingerprint = current.hasFingerprint &&
                 current.sourceSignature == sourceSignature &&
-                current.algorithmVersion == FINGERPRINT_ALGORITHM_VERSION
+                current.algorithmVersion == algorithmVersion
             values.put("fingerprint_status", if (canReuseFingerprint) "DONE" else "PENDING")
             db.update("media_asset", values, "id=?", arrayOf(existingId.toString()))
             return AssetScanToken(
@@ -250,6 +259,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                     put("content_sha256", contentSha256)
                     put("quality_score", qualityScore)
                     put("potential_identifier", HashBuckets.potentialIdentifier(asset))
+                    putNull("video_fingerprint_source")
                 },
                 SQLiteDatabase.CONFLICT_REPLACE
             )
@@ -294,6 +304,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                     putNull("content_sha256")
                     put("quality_score", qualityScore)
                     put("potential_identifier", HashBuckets.potentialIdentifier(asset))
+                    put("video_fingerprint_source", fingerprint.source.name)
                 },
                 SQLiteDatabase.CONFLICT_REPLACE
             )
@@ -388,7 +399,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
      *
      * 图片使用单组合 Hash；视频为每一帧建立索引，最终使用竞品的跨帧至少两次命中精判。
      */
-    fun rebuildSimilarGroups(kinds: Set<MediaKind>) {
+    fun rebuildSimilarGroups(
+        kinds: Set<MediaKind>,
+        imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
+        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+    ) {
         val supportedKinds = kinds.filterTo(linkedSetOf()) {
             it == MediaKind.PHOTO ||
                 it == MediaKind.SCREENSHOT ||
@@ -411,7 +426,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                  */
                 val reusableCandidateMap = loadExistingSimilarCandidateMap(db, kind)
                 deleteSimilarGroups(db, kind)
-                val records = loadGroupingFingerprints(db, kind)
+                val records = loadGroupingFingerprints(db, kind, imageFingerprintSize, videoFingerprintMode)
                 if (records.size < 2) return@kindLoop
 
                 val recordsById = records.associateBy(GroupingFingerprint::assetId)
@@ -553,7 +568,9 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
 
     private fun loadGroupingFingerprints(
         db: SQLiteDatabase,
-        kind: MediaKind
+        kind: MediaKind,
+        imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
+        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
     ): List<GroupingFingerprint> {
         /*
          * 竞品的视频专用流程直接使用 MediaStore date_added DESC 的输入顺序作为锚点顺序，
@@ -567,7 +584,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         return db.rawQuery(
             """
             SELECT a.id, f.image_hash, f.color_hash,
-                   f.video_frame_hashes, f.video_frame_colors
+                   f.video_frame_hashes, f.video_frame_colors, f.video_fingerprint_source
             FROM media_asset a
             JOIN fingerprint f ON f.asset_id=a.id
             WHERE a.type=?
@@ -587,7 +604,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             """.trimIndent(),
             arrayOf(
                 kind.name,
-                FINGERPRINT_ALGORITHM_VERSION.toString(),
+                fingerprintAlgorithmVersion(kind, imageFingerprintSize, videoFingerprintMode).toString(),
                 GroupCategory.DUPLICATE.name,
                 kind.name
             )
@@ -598,7 +615,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                         if (cursor.isNull(3) || cursor.isNull(4)) {
                             null
                         } else {
-                            VideoFingerprintCodec.decode(cursor.getString(3), cursor.getString(4))
+                            VideoFingerprintCodec.decode(
+                                hashes = cursor.getString(3),
+                                colors = cursor.getString(4),
+                                source = if (cursor.isNull(5)) null else cursor.getString(5)
+                            )
                         }
                     add(
                         GroupingFingerprint(
@@ -787,7 +808,8 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             """
             SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
                    a.size, a.created_at, a.updated_at, a.bucket, a.path_hint,
-                   f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors
+                   f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors,
+                   f.video_fingerprint_source
             FROM fingerprint f
             JOIN media_asset a ON a.id = f.asset_id
             WHERE a.type = ?
@@ -818,7 +840,8 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             """
             SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
                    a.size, a.created_at, a.updated_at, a.bucket, a.path_hint,
-                   f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors
+                   f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors,
+                   f.video_fingerprint_source
             FROM media_asset a
             JOIN fingerprint f ON f.asset_id = a.id
             WHERE a.type = ?
@@ -867,7 +890,10 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
      * colorHash。真机 9k 图片下这部分约 18s。现在把 colorHash 一起放进内存索引：
      * BK-Tree 仍负责全库近邻召回，最终 dHash+colorHash 精判直接在内存完成，不牺牲准确性。
      */
-    fun loadHashIndex(kind: MediaKind): List<HashIndexEntry> {
+    fun loadHashIndex(
+        kind: MediaKind,
+        imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE
+    ): List<HashIndexEntry> {
         return readableDatabase.rawQuery(
             """
             SELECT a.id, f.image_hash, f.color_hash
@@ -878,7 +904,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
               AND a.fingerprint_algorithm_version = ?
               AND f.video_frame_hashes IS NULL
             """.trimIndent(),
-            arrayOf(kind.name, FINGERPRINT_ALGORITHM_VERSION.toString())
+            arrayOf(kind.name, fingerprintAlgorithmVersion(kind, imageFingerprintSize).toString())
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
@@ -916,7 +942,8 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                     """
                     SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height,
                            a.duration, a.size, a.created_at, a.updated_at, a.bucket, a.path_hint,
-                           f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors
+                           f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors,
+                           f.video_fingerprint_source
                     FROM fingerprint f
                     JOIN media_asset a ON a.id = f.asset_id
                     WHERE a.id IN ($placeholders)
@@ -928,7 +955,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             .toList()
     }
 
-    fun findVideoFingerprintCandidates(assetId: Long, asset: MediaAsset): List<CandidateFingerprint> {
+    fun findVideoFingerprintCandidates(
+        assetId: Long,
+        asset: MediaAsset,
+        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+    ): List<CandidateFingerprint> {
         /*
          * 视频保存完整多帧指纹。旧版本会读取同类型所有视频再逐一比较，视频数量一大
          * 就会退化成近似 O(n²)。这里先用轻量元数据做候选收窄：
@@ -945,7 +976,8 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             """
             SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
                    a.size, a.created_at, a.updated_at, a.bucket, a.path_hint,
-                   f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors
+                   f.image_hash, f.color_hash, f.video_frame_hashes, f.video_frame_colors,
+                   f.video_fingerprint_source
             FROM fingerprint f
             JOIN media_asset a ON a.id = f.asset_id
             WHERE a.type = ?
@@ -961,7 +993,7 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             """.trimIndent(),
             arrayOf(
                 asset.kind.name,
-                FINGERPRINT_ALGORITHM_VERSION.toString(),
+                fingerprintAlgorithmVersion(asset.kind, DEFAULT_IMAGE_FINGERPRINT_SIZE, videoFingerprintMode).toString(),
                 assetId.toString(),
                 durationBucket.toString(),
                 videoDurationTolerance(asset.duration).toString(),
@@ -1281,7 +1313,11 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                 videoFingerprint = if (cursor.isNull(15) || cursor.isNull(16)) {
                     null
                 } else {
-                    VideoFingerprintCodec.decode(cursor.getString(15), cursor.getString(16))
+                    VideoFingerprintCodec.decode(
+                        hashes = cursor.getString(15),
+                        colors = cursor.getString(16),
+                        source = if (cursor.isNull(17)) null else cursor.getString(17)
+                    )
                 }
             )
         }
@@ -1488,6 +1524,10 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          */
         private const val OTHER_GROUP_PREVIEW_LIMIT = 120
         /*
+         * v27 将图片指纹尺寸和视频指纹模式纳入 fingerprint_algorithm_version，支持 SDK
+         * 请求侧配置 imageFingerprintSize/videoFingerprintMode；同时将 Duplicate SHA-256
+         * 默认延后计算，避免扫描主链路读全文件。
+         *
          * v26 在保持图片指纹输入 256 的前提下，Android 10+ 优先使用
          * ContentResolver.loadThumbnail(asset.uri, 256) 加载指纹 Bitmap，失败后再回退
          * MediaStore.Images.Thumbnails。输入来源变化可能改变 dHash/colorHash 结果，因此
@@ -1505,11 +1545,27 @@ class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
          * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
          * 7. 完整清晰度/曝光质量分不再阻塞首次扫描主链路。
          */
-        private const val DB_VERSION = 26
+        private const val DB_VERSION = 27
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
-        private const val FINGERPRINT_ALGORITHM_VERSION = 26
+        private const val FINGERPRINT_ALGORITHM_VERSION = 27
+        private const val DEFAULT_IMAGE_FINGERPRINT_SIZE = 256
         private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
         private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
+        private fun fingerprintAlgorithmVersion(
+            kind: MediaKind,
+            imageFingerprintSize: Int,
+            videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+        ): Int {
+            if (kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING) {
+                return FINGERPRINT_ALGORITHM_VERSION * 100 + videoFingerprintMode.ordinal
+            }
+            /*
+             * 图片 dHash/colorHash 会随指纹输入尺寸变化。把尺寸编码进算法版本，避免不同
+             * 产品配置下复用旧 fingerprint。乘数留出后续基础算法版本增长空间。
+             */
+            return FINGERPRINT_ALGORITHM_VERSION * 10_000 + imageFingerprintSize.coerceIn(1, 9_999)
+        }
 
         private fun videoDurationTolerance(durationMs: Long): Long {
             val durationBucket = HashBuckets.durationBucket(durationMs)
@@ -1653,16 +1709,25 @@ object VideoFingerprintCodec {
         }
     }
 
-    fun decode(hashes: String, colors: String): VideoFingerprint? {
+    fun decode(hashes: String, colors: String, source: String? = null): VideoFingerprint? {
         val hashValues = hashes.split(",").mapNotNull { it.toLongOrNull() }
         val colorValues = colors.split("|").map { encoded ->
             if (encoded == INVALID_COLOR_MARKER) emptyArray() else ColorHashCodec.decode(encoded)
         }
         if (hashValues.isEmpty() || hashValues.size != colorValues.size) return null
-        return VideoFingerprint(
-            hashValues.indices.map { index ->
-                CombinedHash(hashValues[index], colorValues[index])
+        val frames = hashValues.indices.map { index ->
+            CombinedHash(hashValues[index], colorValues[index])
+        }
+        val decodedSource = source
+            ?.let { runCatching { VideoFingerprintSource.valueOf(it) }.getOrNull() }
+            ?: if (frames.count(CombinedHash::isValid) <= 1) {
+                VideoFingerprintSource.SYSTEM_THUMBNAIL
+            } else {
+                VideoFingerprintSource.MMR_FRAMES
             }
+        return VideoFingerprint(
+            frames = frames,
+            source = decodedSource
         )
     }
 }

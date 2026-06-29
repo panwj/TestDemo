@@ -172,7 +172,12 @@ client.close()
 
 ```kotlin
 val result = client.scan(
-    request = SimilarScanRequest(forceFull = false),
+    request = SimilarScanRequest(
+        forceFull = false,
+        imageFingerprintSize = 256,
+        calculateDuplicateSha256DuringScan = false,
+        videoFingerprintMode = VideoFingerprintMode.BALANCED
+    ),
     observer = SimilarScanObserver { progress ->
         // progress.stage
         // progress.processedCount
@@ -187,6 +192,23 @@ val result = client.scan(
 ```kotlin
 client.scan(SimilarScanRequest(forceFull = true), observer)
 ```
+
+常用参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `forceFull` | `false` | 是否强制全量扫描 |
+| `imageFingerprintSize` | `256` | 图片/截图指纹 Bitmap 最大边，SDK 会限制在 96..512 |
+| `calculateDuplicateSha256DuringScan` | `false` | 是否在扫描主链路中立即补算 Duplicate 候选的 SHA-256 |
+| `videoFingerprintMode` | `BALANCED` | 视频指纹模式：`FAST`、`BALANCED`、`ACCURATE` |
+
+视频模式建议：
+
+| 模式 | 适用场景 | 特点 |
+| --- | --- | --- |
+| `FAST` | 速度优先、视频量大、可接受封面相似风险 | 系统缩略图单帧优先，失败时少量 MMR 帧 |
+| `BALANCED` | 默认推荐 | 系统缩略图 + 多个 MMR 时间点，避免完全单帧化 |
+| `ACCURATE` | 准确率优先、视频量可控 | 更多 MMR 时间点，不把系统缩略图作为唯一依据 |
 
 扫描阶段：
 
@@ -503,10 +525,10 @@ OTHER
 图片指纹 Bitmap 加载
 BK-Tree 候选查询
 SQLite 指纹写入
-Duplicate 候选 SHA-256 按需计算
+Duplicate 候选 SHA-256 按需或延后计算
 ```
 
-视频路径当前优先系统缩略图，通常比强制多帧抽帧更快，但识别效果也会受单帧策略影响。
+视频路径默认 `BALANCED`，会在系统缩略图之外补充 MMR 时间点；如果切到 `FAST`，识别效果仍会受单帧策略影响。
 
 ## 15. 多产品接入建议
 
@@ -527,7 +549,7 @@ Duplicate 候选 SHA-256 按需计算
 | 扫描不到新照片 | 是否 Android 14 部分授权；是否只触发增量；MediaStore 是否可见 |
 | Similar 数量偏少 | 图片缩略图是否加载失败；算法版本是否一致；资源是否进入 Duplicate |
 | Similar 数量偏多 | 截图/录屏分类是否误判；阈值是否过宽；是否误用连通分量理解分组 |
-| 视频相似不稳定 | 当前是否命中系统缩略图单帧；DATA 路径是否可读；有效帧数量是否不足 |
+| 视频相似不稳定 | 当前 videoFingerprintMode；低信息帧是否过多；DATA/FileDescriptor 是否可读；有效帧数量是否不足 |
 | 删除后又出现 | 是否调用 markDeletePending；系统确认后是否调用 finalizeDelete；是否有并发扫描 |
 | 首页计数重复 | 是否直接拼 loadGroups；建议使用 loadProductCategories |
 

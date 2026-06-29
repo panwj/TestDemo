@@ -9,6 +9,7 @@ import com.clean.similarscan.api.model.SimilarGroup
 import com.clean.similarscan.internal.database.ScanDatabase
 import com.clean.similarscan.internal.scanner.ProductCategoryBuilder
 import com.clean.similarscan.internal.scanner.SimilarMediaScanner
+import com.clean.similarscan.internal.similarity.VideoFingerprintMode as InternalVideoFingerprintMode
 
 /**
  * 基于当前 Demo 实现的 SDK 适配器。
@@ -25,7 +26,12 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
         request: SimilarScanRequest,
         observer: SimilarScanObserver
     ): ScanResult {
-        return scanner.scan(request.forceFull) { progress ->
+        return scanner.scan(
+            forceFull = request.forceFull,
+            imageFingerprintSize = request.normalizedImageFingerprintSize,
+            calculateDuplicateSha256DuringScan = request.calculateDuplicateSha256DuringScan,
+            videoFingerprintMode = InternalVideoFingerprintMode.valueOf(request.videoFingerprintMode.name)
+        ) { progress ->
             observer.onProgress(progress.toApi())
         }.toApi()
     }

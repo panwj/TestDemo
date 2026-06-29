@@ -32,24 +32,48 @@ class HammingBkTree {
         }
     }
 
-    fun query(hash: Long, maxDistance: Int): Set<Long> {
-        val result = linkedSetOf<Long>()
-        val rootNode = root ?: return result
+    fun query(
+        hash: Long,
+        maxDistance: Int,
+        excludedAssetIds: Set<Long> = emptySet()
+    ): Set<Long> {
+        val result = mutableListOf<Long>()
+        queryInto(hash, maxDistance, excludedAssetIds, result)
+        return result.toSet()
+    }
+
+    fun queryInto(
+        hash: Long,
+        maxDistance: Int,
+        excludedAssetIds: Set<Long> = emptySet(),
+        result: MutableList<Long>,
+        seenAssetIds: MutableSet<Long>? = null
+    ) {
+        val rootNode = root ?: return
         val pending = ArrayDeque<Node>()
         pending += rootNode
 
         while (pending.isNotEmpty()) {
             val node = pending.removeFirst()
             val distance = hammingDistance(hash, node.hash)
-            if (distance <= maxDistance) result += node.assetIds
+            if (distance <= maxDistance) {
+                if (excludedAssetIds.isEmpty() && seenAssetIds == null) {
+                    result += node.assetIds
+                } else {
+                    node.assetIds.forEach { assetId ->
+                        if (assetId !in excludedAssetIds && (seenAssetIds == null || seenAssetIds.add(assetId))) {
+                            result += assetId
+                        }
+                    }
+                }
+            }
 
             val minimum = (distance - maxDistance).coerceAtLeast(0)
-            val maximum = distance + maxDistance
-            node.children.forEach { (edge, child) ->
-                if (edge in minimum..maximum) pending += child
+            val maximum = (distance + maxDistance).coerceAtMost(MAX_HAMMING_DISTANCE)
+            for (edge in minimum..maximum) {
+                node.children[edge]?.let { child -> pending += child }
             }
         }
-        return result
     }
 
     private fun hammingDistance(first: Long, second: Long): Int {
@@ -58,6 +82,10 @@ class HammingBkTree {
 
     private class Node(val hash: Long) {
         val assetIds = mutableListOf<Long>()
-        val children = mutableMapOf<Int, Node>()
+        val children = arrayOfNulls<Node>(MAX_HAMMING_DISTANCE + 1)
+    }
+
+    private companion object {
+        const val MAX_HAMMING_DISTANCE = 64
     }
 }
