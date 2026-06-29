@@ -1,0 +1,549 @@
+# Similar Scan Core SDK 集成指南
+
+本文面向接入 `similar-scan-core` 的宿主产品，说明 module 依赖、权限申请、扫描调度、结果展示、缩略图加载和删除一致性接入方式。
+
+## 1. 接入边界
+
+`similar-scan-core` 是 Android Library module，提供本地图片/视频扫描和相似识别能力。
+
+SDK 负责：
+
+- MediaStore 图片/视频枚举。
+- 图片、截图、视频、录屏分类。
+- 图片/截图 Duplicate 识别。
+- 图片/截图 Similar 识别。
+- 视频/录屏 Similar 识别。
+- SQLite 本地缓存、断点续扫、增量扫描。
+- Similar/Duplicate/Other 分组和产品分类输出。
+- UI 预览 Bitmap 加载接口。
+- 删除中状态和扫描异步提交一致性。
+
+SDK 不负责：
+
+- 不弹系统权限框。
+- 不声明宿主业务 Activity、Service、通知样式。
+- 不创建前台服务通知。
+- 不处理系统删除确认弹窗。
+- 不提供成品 UI。
+- 不上传媒体文件，不依赖网络。
+
+接入方只应依赖：
+
+```kotlin
+com.clean.similarscan.api.*
+com.clean.similarscan.api.model.*
+com.clean.similarscan.permission.*
+```
+
+不要依赖：
+
+```kotlin
+com.clean.similarscan.internal.*
+```
+
+`internal` 包中的数据库表、指纹结构、阈值和索引实现可能随 SDK 版本变化。
+
+## 2. Gradle 接入
+
+当前 Demo 采用工程内 module 依赖：
+
+```kotlin
+dependencies {
+    implementation(project(":similar-scan-core"))
+}
+```
+
+`settings.gradle.kts` 需要包含：
+
+```kotlin
+include(":similar-scan-core")
+```
+
+SDK module 当前配置：
+
+```kotlin
+android {
+    namespace = "com.clean.similarscan"
+    compileSdk = 36
+
+    defaultConfig {
+        minSdk = 23
+    }
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+```
+
+宿主产品建议：
+
+- `minSdk >= 23`。
+- 编译环境支持 Java 17 / Kotlin Android。
+- 如果后续发布为 AAR，接入方式可替换为 Maven 坐标，业务代码不需要改动。
+
+## 3. Manifest 权限
+
+宿主 App 需要声明媒体读取权限。
+
+```xml
+<uses-permission
+    android:name="android.permission.READ_EXTERNAL_STORAGE"
+    android:maxSdkVersion="32" />
+<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+<uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+```
+
+如果宿主使用前台服务执行扫描，还需要：
+
+```xml
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+```
+
+前台扫描服务示例：
+
+```xml
+<service
+    android:name=".service.MediaScanService"
+    android:exported="false"
+    android:foregroundServiceType="dataSync" />
+```
+
+SDK 不会自动请求这些权限，也不会自动启动 Service。
+
+## 4. 权限申请
+
+SDK 提供权限判断工具：
+
+```kotlin
+SimilarScanPermissionChecker.requiredPermissions()
+SimilarScanPermissionChecker.hasPermission(context)
+SimilarScanPermissionChecker.hasFullVisualAccess(context)
+SimilarScanPermissionChecker.accessLevel(context)
+```
+
+推荐申请方式：
+
+```kotlin
+if (!SimilarScanPermissionChecker.hasPermission(context)) {
+    activity.requestPermissions(
+        SimilarScanPermissionChecker.requiredPermissions(),
+        REQUEST_MEDIA_PERMISSION
+    )
+}
+```
+
+权限模型：
+
+| Android 版本 | 权限 |
+| --- | --- |
+| Android 12 及以下 | `READ_EXTERNAL_STORAGE` |
+| Android 13 | `READ_MEDIA_IMAGES`、`READ_MEDIA_VIDEO` |
+| Android 14+ | 以上媒体权限 + `READ_MEDIA_VISUAL_USER_SELECTED` 部分访问兼容 |
+
+`hasPermission()` 表示至少可读取图片或视频。`hasFullVisualAccess()` 表示完整图片和视频访问。全量扫描清理未出现资源只应在完整访问下生效；部分授权下，系统没有返回的资源不等于已删除。
+
+## 5. 创建 SDK Client
+
+创建入口：
+
+```kotlin
+val client = SimilarScanSdk.create(context)
+```
+
+`context` 会转为 `applicationContext` 保存。`SimilarScanClient` 持有内部 `SQLiteOpenHelper`，使用完成后建议关闭：
+
+```kotlin
+client.close()
+```
+
+典型生命周期：
+
+- 单次前台服务扫描：Service 内创建 client，扫描结束后 close。
+- 页面读取缓存结果：Activity/Fragment 创建 client，`onDestroy()` close。
+- 如果宿主有自己的 DI 容器，可以按进程单例管理，但要避免在主线程长时间执行 scan。
+
+## 6. 执行扫描
+
+`scan()` 是同步阻塞方法，接入方必须放到后台线程、Worker 或前台 Service 中执行。
+
+```kotlin
+val result = client.scan(
+    request = SimilarScanRequest(forceFull = false),
+    observer = SimilarScanObserver { progress ->
+        // progress.stage
+        // progress.processedCount
+        // progress.discoveredGroupCount
+        // progress.message
+    }
+)
+```
+
+强制全量扫描：
+
+```kotlin
+client.scan(SimilarScanRequest(forceFull = true), observer)
+```
+
+扫描阶段：
+
+```kotlin
+IDLE
+ENUMERATING
+FINGERPRINTING
+MATCHING
+COMPLETED
+FAILED
+```
+
+推荐调度：
+
+```text
+用户授权
+-> 宿主启动前台服务或后台任务
+-> 后台线程调用 client.scan()
+-> observer 回调进度
+-> 宿主通过通知、广播、Flow、LiveData 或其他状态容器通知 UI
+-> UI 节流读取 client.loadProductCategories()
+```
+
+Demo 中使用前台 Service + 包内广播，其他产品可以替换为自己的任务体系。
+
+## 7. 扫描频率建议
+
+推荐触发场景：
+
+- 用户首次授权后执行一次扫描。
+- 用户手动点击重新扫描。
+- App 前台观察到 MediaStore Images 或 Video 变化后，做防抖增量扫描。
+- App 冷启动或回到首页时先展示缓存结果，再按需触发增量扫描。
+
+建议防抖：
+
+```text
+MediaStore ContentObserver onChange
+-> 延迟 1~3 秒
+-> 如果没有扫描进行中，再启动扫描
+```
+
+不建议：
+
+- 每个 MediaStore 变化事件立即启动扫描。
+- 在主线程直接调用 `scan()`。
+- 多个扫描任务并发写同一个 SDK 数据库。
+
+## 8. 读取结果
+
+SDK 提供两类结果接口。
+
+### 8.1 产品分类结果
+
+推荐首页使用：
+
+```kotlin
+val categories = client.loadProductCategories()
+```
+
+返回类型：
+
+```kotlin
+List<ProductCategory>
+```
+
+`ProductCategory` 包含：
+
+```kotlin
+val type: ProductCategoryType
+val groups: List<SimilarGroup>
+val itemCount: Int
+val assets: List<MediaAsset>
+val totalSize: Long
+```
+
+当前分类顺序：
+
+```text
+SIMILAR
+DUPLICATES
+SIMILAR_SCREENSHOTS
+SIMILAR_VIDEOS
+OTHER_SCREENSHOTS
+CHAT_PHOTOS
+SIMILAR_SCREEN_RECORDINGS
+OTHER_SCREEN_RECORDINGS
+OTHER_VIDEOS
+OTHER
+```
+
+`itemCount` 是分类总资源数，`totalSize` 是分类总大小。`assets` 会对 `(kind, id)` 去重。
+
+### 8.2 原始分组
+
+用于诊断、详情页或宿主自定义分类：
+
+```kotlin
+val groups = client.loadGroups(limit = Int.MAX_VALUE)
+```
+
+`SimilarGroup` 包含：
+
+```kotlin
+val id: Long
+val title: String
+val subtitle: String
+val category: GroupCategory
+val kind: MediaKind
+val assets: List<MediaAsset>
+val totalAssetCount: Int
+val totalSizeBytes: Long
+```
+
+如果宿主直接使用 `loadGroups()`，需要自己处理产品分类顺序、Duplicate/Similar 互斥、Other 分类展示等。普通首页优先使用 `loadProductCategories()`。
+
+## 9. UI 缩略图加载
+
+扫描指纹 Bitmap 是 SDK 内部逻辑，接入方不要调用内部 `MediaBitmapLoader`。
+
+UI 预览图使用：
+
+```kotlin
+val bitmap = client.loadBitmap(asset, thumbSize = 1024)
+```
+
+或单独创建 loader：
+
+```kotlin
+val loader = SimilarScanSdk.createImageLoader(context)
+val bitmap = loader.loadBitmap(asset, 1024)
+loader.close()
+```
+
+注意：
+
+- `loadBitmap()` 可能执行解码或抽帧，建议放到后台线程。
+- 列表中应自行做 ViewHolder 绑定校验，避免异步加载结果错位。
+- 图片 UI 缩略图和扫描指纹 Bitmap 不是同一个输入。
+- 视频 UI 封面和视频相似分析帧也不是同一个输入。
+
+## 10. 删除接入
+
+宿主负责调用 Android 系统删除确认。SDK 负责删除前后的本地扫描状态一致性。
+
+推荐流程：
+
+```kotlin
+val selectedUris: List<String> = selectedAssets.map { it.uri.toString() }
+val markedUris = client.markDeletePending(selectedUris)
+```
+
+`markDeletePending()` 会：
+
+```text
+state = DELETE_PENDING
+revision + 1
+```
+
+这样后台扫描中旧 token 无法再提交这些资源的指纹或分组。
+
+然后宿主发起系统删除确认。例如 Android 11+ 可使用：
+
+```kotlin
+MediaStore.createDeleteRequest(contentResolver, uris)
+```
+
+用户确认删除后：
+
+```kotlin
+client.finalizeDelete(markedUris)
+```
+
+用户取消删除后：
+
+```kotlin
+client.restoreDeletePending(markedUris)
+```
+
+App 冷启动时，如果上次删除确认期间进程被杀，可以执行：
+
+```kotlin
+client.recoverStaleDeletePending()
+```
+
+建议宿主持久化本次删除操作状态，确认回调结束后清理。Demo 中这部分由 `DeleteOperationStore` 完成。
+
+## 11. 前台服务参考结构
+
+SDK 不内置 Service。宿主可参考以下结构：
+
+```kotlin
+class MediaScanService : Service() {
+    private val executor = Executors.newSingleThreadExecutor()
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(NOTIFICATION_ID, buildNotification("Preparing..."))
+        val forceFull = intent?.getBooleanExtra("force_full", false) == true
+
+        executor.execute {
+            val client = SimilarScanSdk.create(applicationContext)
+            try {
+                val result = client.scan(
+                    SimilarScanRequest(forceFull = forceFull),
+                    SimilarScanObserver { progress ->
+                        // update notification
+                        // publish progress to UI
+                    }
+                )
+                // publish complete result
+            } catch (t: Throwable) {
+                // publish failure
+            } finally {
+                client.close()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(startId)
+            }
+        }
+        return START_NOT_STICKY
+    }
+}
+```
+
+宿主需要自己保证：
+
+- 同一时间只有一个扫描任务写库。
+- Service 生命周期结束时关闭 client。
+- 通知权限拒绝不阻断媒体扫描。
+- 进度回调不要高频刷新复杂 UI，建议节流读取缓存结果。
+
+## 12. Activity 首页参考流程
+
+推荐首页行为：
+
+```text
+onCreate
+-> 创建 client
+-> recoverStaleDeletePending()
+-> loadProductCategories() 展示缓存
+-> 如果没有权限，展示授权入口
+
+用户点击扫描
+-> 检查媒体权限
+-> 必要时请求通知权限
+-> 启动前台扫描服务
+
+收到扫描进度
+-> 更新状态文案
+-> 节流调用 loadProductCategories()
+
+收到完成
+-> 隐藏进度
+-> 再次 loadProductCategories()
+
+onDestroy
+-> client.close()
+```
+
+如果宿主用 Compose、Flow、WorkManager 或自研任务框架，只需要保持同样的数据流：扫描在后台执行，UI 从 SDK 缓存读取结果。
+
+## 13. 结果展示建议
+
+首页建议展示 `ProductCategoryType`：
+
+```kotlin
+when (category.type) {
+    ProductCategoryType.SIMILAR -> ...
+    ProductCategoryType.DUPLICATES -> ...
+    ProductCategoryType.SIMILAR_SCREENSHOTS -> ...
+    ProductCategoryType.SIMILAR_VIDEOS -> ...
+    ProductCategoryType.OTHER_SCREENSHOTS -> ...
+    ProductCategoryType.CHAT_PHOTOS -> ...
+    ProductCategoryType.SIMILAR_SCREEN_RECORDINGS -> ...
+    ProductCategoryType.OTHER_SCREEN_RECORDINGS -> ...
+    ProductCategoryType.OTHER_VIDEOS -> ...
+    ProductCategoryType.OTHER -> ...
+}
+```
+
+分组类分类：
+
+```text
+SIMILAR
+DUPLICATES
+SIMILAR_SCREENSHOTS
+SIMILAR_VIDEOS
+SIMILAR_SCREEN_RECORDINGS
+```
+
+非分组类分类：
+
+```text
+OTHER_SCREENSHOTS
+CHAT_PHOTOS
+OTHER_SCREEN_RECORDINGS
+OTHER_VIDEOS
+OTHER
+```
+
+`Other` 类可能资源很多。SDK 当前首页预览会限制 Other 分组读取数量，详情页如果需要展示完整列表，建议宿主后续接入分页接口或扩展 SDK 查询接口。
+
+## 14. 线程与性能注意事项
+
+- `scan()` 必须后台执行。
+- `loadBitmap()` 建议后台执行。
+- `loadProductCategories()` 会读 SQLite，建议避免在主线程高频调用。
+- 进度回调可能在扫描线程触发，宿主更新 UI 前需要切主线程。
+- 大图库初次冷扫耗时较长，建议使用前台服务和持续通知。
+- 增量扫描会复用未变化资源的旧指纹，二次扫描成本显著降低。
+
+当前主要耗时通常在：
+
+```text
+图片指纹 Bitmap 加载
+BK-Tree 候选查询
+SQLite 指纹写入
+Duplicate 候选 SHA-256 按需计算
+```
+
+视频路径当前优先系统缩略图，通常比强制多帧抽帧更快，但识别效果也会受单帧策略影响。
+
+## 15. 多产品接入建议
+
+如果同一公司内多个产品接入 SDK：
+
+- 保持 `similar-scan-core` 单独 module 或 AAR 发布。
+- 宿主产品只依赖 API 包，不访问 internal 包。
+- 权限、通知、删除确认、UI 文案由宿主产品本地化。
+- SDK 数据库名当前固定为 `similar_scan.db`，同一个 App 内不要同时接入多个互不兼容版本。
+- 如果未来需要不同产品共存多套配置，应先扩展 `SimilarScanRequest` 或 SDK 初始化参数，而不是修改 internal 常量。
+
+## 16. 调试与排查
+
+常见问题：
+
+| 问题 | 排查方向 |
+| --- | --- |
+| 扫描不到新照片 | 是否 Android 14 部分授权；是否只触发增量；MediaStore 是否可见 |
+| Similar 数量偏少 | 图片缩略图是否加载失败；算法版本是否一致；资源是否进入 Duplicate |
+| Similar 数量偏多 | 截图/录屏分类是否误判；阈值是否过宽；是否误用连通分量理解分组 |
+| 视频相似不稳定 | 当前是否命中系统缩略图单帧；DATA 路径是否可读；有效帧数量是否不足 |
+| 删除后又出现 | 是否调用 markDeletePending；系统确认后是否调用 finalizeDelete；是否有并发扫描 |
+| 首页计数重复 | 是否直接拼 loadGroups；建议使用 loadProductCategories |
+
+需要更细粒度诊断时，可以临时查看 SDK 内部数据库表，但不要把 internal 表结构作为产品代码依赖。
+
+## 17. 最小接入清单
+
+接入一个新产品至少需要完成：
+
+- 添加 `implementation(project(":similar-scan-core"))` 或 AAR 依赖。
+- Manifest 声明媒体权限。
+- Activity 中申请媒体权限。
+- 后台线程、前台 Service 或 Worker 中调用 `client.scan()`。
+- 首页读取 `client.loadProductCategories()`。
+- 列表或详情使用 `client.loadBitmap()` 加载预览图。
+- 删除前调用 `markDeletePending()`，删除确认后调用 `finalizeDelete()` 或 `restoreDeletePending()`。
+- 生命周期结束时调用 `client.close()`。
+
+完成以上步骤后，宿主产品即可获得与 Demo 当前一致的本地相似媒体扫描能力。

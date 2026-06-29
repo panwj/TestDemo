@@ -1,34 +1,36 @@
 # Similar Scan Core SDK
 
-`similar-scan-core` 是可复用的 Android 图库扫描与相似识别 SDK module。当前 Demo 通过该 module 实现照片、截图、视频、录屏资源扫描，相似/相同识别，扫描结果落库，断点续扫，增量扫描，以及删除状态一致性处理。
+`similar-scan-core` 是可复用的 Android 本地图库扫描与相似识别 SDK module。当前 Demo 的照片、截图、视频、录屏扫描能力都由该 module 提供，后续可作为独立 SDK 接入其他产品。
 
-## 1. SDK 功能
+## 文档入口
+
+- [核心技术方案](docs/core-technical-design.md)：扫描链路、照片缩略图指纹、dHash/colorHash、BK-Tree、内存缓存、Duplicate、Similar 分组、视频单帧/多帧逻辑、删除一致性。
+- [SDK 集成指南](docs/integration-guide.md)：Gradle 依赖、权限申请、后台扫描、结果读取、缩略图加载、删除接入、宿主职责和排查清单。
+
+## SDK 能力
 
 SDK 当前支持：
 
-- 枚举本机 MediaStore 图片和视频资源。
+- 枚举本机 `MediaStore.Images` 和 `MediaStore.Video`。
 - 区分普通照片、截图、普通视频、录屏。
 - 识别相同图片/截图。
-- 识别相似图片。
-- 识别相似截图。
-- 识别相似视频和相似录屏。
-- 输出 Other Screenshots、Other Videos、Other Screen Recordings、Other 等产品分类。
-- 扫描结果实时落库，支持边扫边展示。
-- 支持完整扫描和增量扫描。
-- 支持断点续扫，资源未变化时复用旧指纹。
-- 支持用户删除过程中的 DELETE_PENDING 状态，避免后台扫描把待删资源重新加入结果。
-- 支持 UI 缩略图加载接口，接入方无需直接依赖内部 Bitmap 加载器。
+- 识别相似图片、相似截图、相似视频、相似录屏。
+- 输出 Similar、Duplicates、Similar Screenshots、Similar Videos、Other Screenshots、Chat Photos、Similar Screen Rec、Other Screen Rec、Other Videos、Other 等产品分类。
+- SQLite 落库，支持缓存展示、断点续扫、增量扫描和资源未变化时复用旧指纹。
+- 使用删除中状态和 revision token，避免异步扫描把待删除资源重新写回结果。
+- 提供 UI 预览图加载接口，接入方无需访问内部 Bitmap 加载器。
 
-SDK 不负责：
+SDK 当前不负责：
 
 - 不弹系统权限框。
-- 不实现前台通知。
-- 不实现 Activity/Fragment UI。
-- 不直接执行系统删除确认弹窗。
+- 不实现前台通知和扫描 Service。
+- 不提供成品 Activity/Fragment/UI。
+- 不发起系统删除确认弹窗。
+- 不上传媒体文件，不依赖网络。
 
-这些能力属于宿主 App。Demo 中由 `app` module 自己实现。
+这些能力由宿主产品实现。
 
-## 2. Module 结构
+## Module 结构
 
 ```text
 similar-scan-core/
@@ -36,14 +38,14 @@ similar-scan-core/
     api/                  # SDK 对外入口
     api/model/            # SDK 对外 DTO
     permission/           # 权限状态判断，不发起权限申请
-    internal/database/    # SQLite 落库与删除状态
+    internal/database/    # SQLite 落库、分组、删除状态
     internal/scanner/     # MediaStore 枚举、分类、扫描编排、Bitmap 加载
-    internal/similarity/  # dHash、colorHash、视频指纹、阈值、BK-Tree
-    internal/model/       # SDK 内部模型，不对 app 直接暴露
+    internal/similarity/  # dHash、colorHash、阈值、BK-Tree、视频指纹
+    internal/model/       # 内部模型
     internal/util/        # 内部工具
 ```
 
-对外接入只应依赖：
+接入方只应依赖：
 
 ```kotlin
 com.clean.similarscan.api.*
@@ -57,9 +59,9 @@ com.clean.similarscan.permission.*
 com.clean.similarscan.internal.*
 ```
 
-## 3. Gradle 接入
+## 快速接入
 
-当前 Demo 使用工程 module 依赖：
+Gradle：
 
 ```kotlin
 dependencies {
@@ -67,40 +69,7 @@ dependencies {
 }
 ```
 
-SDK module 配置：
-
-```kotlin
-android {
-    namespace = "com.clean.similarscan"
-    compileSdk = 36
-
-    defaultConfig {
-        minSdk = 23
-    }
-}
-```
-
-## 4. 权限职责
-
-SDK 只提供权限状态判断和所需权限列表：
-
-```kotlin
-SimilarScanPermissionChecker.requiredPermissions()
-SimilarScanPermissionChecker.hasPermission(context)
-SimilarScanPermissionChecker.hasFullVisualAccess(context)
-SimilarScanPermissionChecker.accessLevel(context)
-```
-
-宿主 App 负责申请权限：
-
-```kotlin
-activity.requestPermissions(
-    SimilarScanPermissionChecker.requiredPermissions(),
-    REQUEST_CODE
-)
-```
-
-需要在宿主 App Manifest 中声明：
+Manifest 媒体权限：
 
 ```xml
 <uses-permission
@@ -111,22 +80,30 @@ activity.requestPermissions(
 <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
 ```
 
-Android 14+ 如果用户只授予部分照片访问，SDK 只能扫描系统返回的可见资源。刚拍照片没有出现在结果中时，优先检查是否为部分授权。
+权限判断：
 
-## 5. 基本用法
+```kotlin
+if (!SimilarScanPermissionChecker.hasPermission(context)) {
+    activity.requestPermissions(
+        SimilarScanPermissionChecker.requiredPermissions(),
+        REQUEST_MEDIA_PERMISSION
+    )
+}
+```
 
-创建扫描客户端：
+创建 Client：
 
 ```kotlin
 val client = SimilarScanSdk.create(context)
 ```
 
-开始扫描：
+后台执行扫描：
 
 ```kotlin
 val result = client.scan(
     request = SimilarScanRequest(forceFull = false),
     observer = SimilarScanObserver { progress ->
+        // progress.stage
         // progress.processedCount
         // progress.discoveredGroupCount
         // progress.message
@@ -146,37 +123,35 @@ val categories = client.loadProductCategories()
 val groups = client.loadGroups()
 ```
 
-加载预览图：
+加载 UI 预览图：
 
 ```kotlin
-val imageLoader = SimilarScanSdk.createImageLoader(context)
-val bitmap = imageLoader.loadBitmap(asset, 1024)
+val bitmap = client.loadBitmap(asset, thumbSize = 1024)
 ```
 
 释放资源：
 
 ```kotlin
 client.close()
-imageLoader.close()
 ```
 
-## 6. 删除一致性
+`scan()` 是同步阻塞方法，必须在后台线程、Worker 或前台 Service 中执行。
 
-删除流程建议：
+## 删除接入
+
+宿主发起系统删除确认前：
 
 ```kotlin
 val markedUris = client.markDeletePending(selectedUris)
 ```
 
-然后宿主 App 发起系统删除确认。
-
-用户确认删除：
+用户确认删除后：
 
 ```kotlin
 client.finalizeDelete(markedUris)
 ```
 
-用户取消删除：
+用户取消删除后：
 
 ```kotlin
 client.restoreDeletePending(markedUris)
@@ -188,212 +163,17 @@ App 冷启动时可恢复悬挂删除状态：
 client.recoverStaleDeletePending()
 ```
 
-这样可以保证后台扫描异步运行时，用户正在删除的资源不会被重新写回相似结果。
+完整流程见 [SDK 集成指南](docs/integration-guide.md)。
 
-## 7. 扫描流程
+## 当前实现要点
 
-整体流程：
+- 图片/截图扫描指纹使用最大边 256 的 Bitmap，优先系统缩略图，失败后 URI/DATA 降采样解码。
+- 图片指纹为 `CombinedHash = 64-bit dHash + RGB 8x3 colorHash`。
+- 照片和截图分别维护 BK-Tree，BK-Tree 只做 dHash 候选召回。
+- `assetId -> CombinedHash` 内存缓存用于候选精判，避免大量回库读取 colorHash。
+- Duplicate 使用图片/截图的 duplicateReference 规则，SHA-256 是按需缓存的字节级证据，不是进入 Duplicate 的硬条件。
+- Similar 最终按锚点直连规则重建，不使用相似关系传递闭包。
+- 视频/录屏优先系统视频缩略图单帧指纹；系统缩略图失败时回退 DATA 路径 + MMR 7 帧等距抽帧。
+- 视频候选先按类型、时长桶、宽高比桶收窄，最终仍走帧级 `dHash + colorHash` 精判。
 
-```text
-权限检查
-  -> MediaStore 分批枚举
-  -> 媒体类型分类
-  -> media_asset 落库
-  -> 判断是否可复用旧指纹
-  -> 图片/视频指纹计算
-  -> 相同识别
-  -> 相似候选召回
-  -> 相似精判
-  -> 增量写入分组
-  -> 扫描完成后按锚点规则重建分组
-  -> 输出产品分类
-```
-
-扫描批大小当前为 `500`。批大小只影响 MediaStore 读取节奏和进度回调频率，不是相似比较边界。
-
-## 8. 资源读取策略
-
-SDK 读取 MediaStore 图片和视频：
-
-- 图片集合：`MediaStore.Images.Media.EXTERNAL_CONTENT_URI`
-- 视频集合：`MediaStore.Video.Media.EXTERNAL_CONTENT_URI`
-- 排序：按 `DATE_ADDED DESC`
-- API 30+ 使用 generation 信息辅助增量扫描。
-- API 30 以下使用 legacy 路径，仍保留最低 API 23 支持。
-
-资源分类基于：
-
-- MediaStore 类型。
-- DISPLAY_NAME。
-- MIME_TYPE。
-- pathHint / bucket。
-- 截图、录屏常见文件名和目录规则。
-
-当前支持的内部媒体类型：
-
-- `PHOTO`
-- `SCREENSHOT`
-- `VIDEO`
-- `SCREEN_RECORDING`
-
-## 9. 图片指纹方案
-
-图片和截图使用组合指纹：
-
-```text
-CombinedHash = dHash + colorHash
-```
-
-Bitmap 输入策略：
-
-1. API 29+ 优先使用 `ContentResolver.loadThumbnail(asset.uri, Size(256, 256), null)`。
-2. 失败或低版本回退 `MediaStore.Images.Thumbnails.getThumbnail(...)`。
-3. 再失败回退 URI decode。
-4. 最后回退 DATA 文件路径 decode。
-5. 指纹 Bitmap 统一等比归一到最大边 `256`。
-
-dHash：
-
-- Kotlin 实现来自竞品 native 反汇编方案。
-- 使用 9x8 采样。
-- 灰度公式：`0.299R + 0.587G + 0.114B`。
-- 生成 64 bit Long。
-
-colorHash：
-
-- RGB 三通道直方图。
-- 每个通道按 32 分桶，共 8 桶。
-- 最终为 `8 x 3` 数组。
-- 除数使用 `pixels.size / 16.0`，与竞品反编译实现保持一致。
-
-质量分：
-
-- 首次扫描主链路使用轻量 metadataScore。
-- 质量分仅用于 Best 排序，不参与相似/相同判断。
-
-## 10. 视频指纹方案
-
-视频和录屏使用视频帧组合指纹。
-
-当前策略：
-
-- 优先使用系统视频缩略图生成单帧指纹。
-- 系统缩略图失败时，使用 MediaMetadataRetriever 抽取多帧。
-- 多帧数量和间隔由 `VideoFingerprintCalculator` 控制。
-- 每帧计算 `CombinedHash`。
-- 视频相似判断不是单帧相等，而是跨帧多次命中精判。
-
-视频候选召回会先按：
-
-- 类型。
-- duration bucket。
-- aspect bucket。
-- 指纹算法版本。
-
-过滤后再进入多帧相似判断。
-
-## 11. 阈值策略
-
-普通照片阈值：
-
-```text
-dHash 0..4     -> 直接相似
-dHash 4..10    -> colorHash 0..7
-dHash 10..18   -> colorHash 0..5
-dHash >= 18    -> 不相似
-```
-
-截图、视频、录屏使用严格阈值：
-
-```text
-dHash 0..2     -> 直接相似
-dHash 2..10    -> colorHash 0..5
-dHash 10..16   -> colorHash 0..2
-dHash >= 16    -> 不相似
-```
-
-严格阈值用于降低截图、录屏和静止视频画面误合并。
-
-## 12. 候选召回和分组
-
-图片候选召回：
-
-- 使用 BK-Tree。
-- 索引 key 为 64 bit dHash。
-- 查询距离为当前类型阈值上限减一。
-- 召回后再用 `dHash + colorHash` 精判。
-
-相同识别：
-
-- 使用竞品式 duplicateReference。
-- 条件包括媒体类型、宽高、感知 hash、编辑状态、文件大小等。
-- SHA-256 保留为诊断证据，不作为唯一重复条件。
-
-分组规则：
-
-- 扫描中实时写入 Similar/Duplicate 分组，便于 UI 及时展示。
-- 扫描完成后按竞品锚点规则重建 Similar 分组。
-- 锚点规则不是连通分量：`A≈B`、`B≈C` 不代表 `A≈C` 必然同组。
-- 图片锚点顺序按创建时间升序。
-- 视频锚点顺序更接近 MediaStore `date_added DESC`。
-
-## 13. 增量扫描和复用
-
-SDK 会为每个资源记录：
-
-- MediaStore id。
-- type。
-- uri。
-- width / height / duration / size。
-- dateAdded / createdAt / updatedAt。
-- generationAdded / generationModified。
-- sourceSignature。
-- fingerprint_algorithm_version。
-- fingerprint_status。
-
-如果资源的关键元数据和算法版本未变化，则复用旧指纹，不重新解码 Bitmap 或抽帧。
-
-如果资源被删除或不再可见：
-
-- 完整扫描结束后会清理本轮未见资源。
-- 增量扫描依赖 MediaStore generation 和下次完整校验。
-
-## 14. 对外模型边界
-
-SDK 对外只暴露：
-
-```kotlin
-com.clean.similarscan.api.model.MediaAsset
-com.clean.similarscan.api.model.SimilarGroup
-com.clean.similarscan.api.model.ProductCategory
-com.clean.similarscan.api.model.ScanProgress
-com.clean.similarscan.api.model.ScanResult
-```
-
-内部数据库模型位于：
-
-```kotlin
-com.clean.similarscan.internal.model
-```
-
-接入方不应使用 internal 包。这样后续 SDK 可以调整数据库字段、指纹结构、候选索引，而不影响接入方代码。
-
-## 15. 当前性能基线
-
-在 Demo 真机约 9k 资源数据上，当前优化后的冷扫描约 160s 级别。主要耗时集中在：
-
-- `load_fingerprint_bitmap`
-- `bk_tree_visual_query`
-- `mark_visual_fingerprint_done`
-- `sha256_current_asset`
-
-视频路径当前耗时较低，主要瓶颈已经转移到图片缩略图加载和图片相似候选召回。
-
-后续可继续优化：
-
-- 图片 Bitmap 预取或受控并发。
-- BK-Tree 分桶索引。
-- 指纹状态批量写库。
-- SHA-256 延迟计算。
-
-这些优化应在保持相似结果准确性的前提下逐项验证。
+详细算法和风险点见 [核心技术方案](docs/core-technical-design.md)。
