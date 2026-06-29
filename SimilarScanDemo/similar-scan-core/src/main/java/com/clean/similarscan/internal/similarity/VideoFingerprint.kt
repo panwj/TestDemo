@@ -22,13 +22,13 @@ data class VideoFingerprint(
     fun isSimilarTo(other: VideoFingerprint, kind: MediaKind): Boolean {
         if (!isValid() || !other.isValid()) return false
 
-        val validFrames = frames.filter(CombinedHash::isValid)
-        val validOtherFrames = other.frames.filter(CombinedHash::isValid)
         if (source == VideoFingerprintSource.COMPETITOR_FRAMES &&
             other.source == VideoFingerprintSource.COMPETITOR_FRAMES
         ) {
-            return isCompetitorCompatibleSimilar(validFrames, validOtherFrames, kind)
+            return isCompetitorCompatibleSimilar(frames, other.frames, kind)
         }
+        val validFrames = frames.filter(CombinedHash::isValid)
+        val validOtherFrames = other.frames.filter(CombinedHash::isValid)
         val thisOnlyThumbnail = source == VideoFingerprintSource.SYSTEM_THUMBNAIL && validFrames.size == 1
         val otherOnlyThumbnail = other.source == VideoFingerprintSource.SYSTEM_THUMBNAIL && validOtherFrames.size == 1
         if (thisOnlyThumbnail || otherOnlyThumbnail) {
@@ -65,24 +65,69 @@ data class VideoFingerprint(
     }
 
     private fun isCompetitorCompatibleSimilar(
-        validFrames: List<CombinedHash>,
-        validOtherFrames: List<CombinedHash>,
+        firstFrames: List<CombinedHash>,
+        secondFrames: List<CombinedHash>,
         kind: MediaKind
     ): Boolean {
-        val requiredMatches = maxOf(
-            1,
-            minOf(MIN_MATCHED_FRAME_COUNT, validFrames.size, validOtherFrames.size)
-        )
-        var remainingMatches = requiredMatches
-        validFrames.forEach { frame ->
-            validOtherFrames.forEach { candidate ->
-                if (frame.isSimilarTo(candidate, kind)) {
-                    remainingMatches--
-                    if (remainingMatches <= 0) return true
+        val validFirstFrames = firstFrames
+            .mapIndexedNotNull { index, hash -> if (hash.isValid()) IndexedFrame(index, hash) else null }
+        val validSecondFrames = secondFrames
+            .mapIndexedNotNull { index, hash -> if (hash.isValid()) IndexedFrame(index, hash) else null }
+        val comparableFrameCount = minOf(validFirstFrames.size, validSecondFrames.size)
+        if (comparableFrameCount == 0) return false
+
+        val rule = CompetitorMatchRule.forKind(kind, comparableFrameCount)
+        val possibleMatches = buildList {
+            validFirstFrames.forEach { first ->
+                validSecondFrames.forEach { second ->
+                    if (first.hash.isSimilarTo(second.hash, kind)) {
+                        add(
+                            FrameMatch(
+                                firstIndex = first.index,
+                                secondIndex = second.index,
+                                imageDistance = java.lang.Long.bitCount(first.hash.imageHash xor second.hash.imageHash),
+                                colorDistance = first.hash.colorDistanceTo(second.hash)
+                            )
+                        )
+                    }
                 }
             }
+        }.sortedWith(
+            compareBy<FrameMatch> { it.imageDistance }
+                .thenBy { it.colorDistance }
+                .thenBy { kotlin.math.abs(it.firstIndex - it.secondIndex) }
+        )
+        if (possibleMatches.isEmpty()) return false
+
+        /*
+         * 竞品兼容模式仍然沿用 7～13 帧抽样，但不能只做“任意两帧命中”。
+         * 真实录屏/视频里经常存在相似片头、黑屏、加载页或静态页面，如果允许同一候选帧
+         * 被多次消费，或者命中都集中在开头几帧，就会把本应拆开的资源合成一个大组。
+         *
+         * 这里把比较升级为三层约束：
+         * 1. 每个候选帧只能消费一次；
+         * 2. 命中数量要达到有效帧比例要求；
+         * 3. 多帧资源的命中位置要覆盖一定时间跨度。
+         *
+         * 这样不改变抽帧成本，也不影响真正重复视频的召回，但能让“明显还能继续细分”
+         * 的大组在最终 anchor 分组时自然拆开。
+         */
+        val usedFirstIndexes = mutableSetOf<Int>()
+        val usedSecondIndexes = mutableSetOf<Int>()
+        val matchedFirstIndexes = mutableListOf<Int>()
+        val matchedSecondIndexes = mutableListOf<Int>()
+        possibleMatches.forEach { match ->
+            if (match.firstIndex in usedFirstIndexes || match.secondIndex in usedSecondIndexes) {
+                return@forEach
+            }
+            usedFirstIndexes += match.firstIndex
+            usedSecondIndexes += match.secondIndex
+            matchedFirstIndexes += match.firstIndex
+            matchedSecondIndexes += match.secondIndex
+
+            if (matchesCompetitorRule(matchedFirstIndexes, matchedSecondIndexes, rule)) return true
         }
-        return false
+        return matchesCompetitorRule(matchedFirstIndexes, matchedSecondIndexes, rule)
     }
 
     private fun hasEnoughSeparatedMatches(indexes: List<Int>): Boolean {
@@ -91,9 +136,70 @@ data class VideoFingerprint(
         return indexes.any { kotlin.math.abs(it - first) >= MIN_MATCHED_FRAME_GAP }
     }
 
+    private fun matchesCompetitorRule(
+        firstIndexes: List<Int>,
+        secondIndexes: List<Int>,
+        rule: CompetitorMatchRule
+    ): Boolean {
+        if (firstIndexes.size < rule.requiredMatches) return false
+        if (rule.requiredSpan <= 0) return true
+        return frameSpan(firstIndexes) >= rule.requiredSpan &&
+            frameSpan(secondIndexes) >= rule.requiredSpan
+    }
+
+    private fun frameSpan(indexes: List<Int>): Int {
+        if (indexes.isEmpty()) return 0
+        return indexes.maxOrNull()!! - indexes.minOrNull()!!
+    }
+
+    private data class IndexedFrame(
+        val index: Int,
+        val hash: CombinedHash
+    )
+
+    private data class FrameMatch(
+        val firstIndex: Int,
+        val secondIndex: Int,
+        val imageDistance: Int,
+        val colorDistance: Long
+    )
+
+    private data class CompetitorMatchRule(
+        val requiredMatches: Int,
+        val requiredSpan: Int
+    ) {
+        companion object {
+            fun forKind(kind: MediaKind, comparableFrameCount: Int): CompetitorMatchRule {
+                if (comparableFrameCount <= 2) {
+                    return CompetitorMatchRule(requiredMatches = 1, requiredSpan = 0)
+                }
+                if (comparableFrameCount <= 5) {
+                    return CompetitorMatchRule(requiredMatches = 2, requiredSpan = 1)
+                }
+
+                val ratioPercent = if (kind == MediaKind.SCREEN_RECORDING) {
+                    SCREEN_RECORDING_MATCH_RATIO_PERCENT
+                } else {
+                    VIDEO_MATCH_RATIO_PERCENT
+                }
+                val requiredByRatio = ceilPercent(comparableFrameCount, ratioPercent)
+                return CompetitorMatchRule(
+                    requiredMatches = maxOf(MIN_MATCHED_FRAME_COUNT + 1, requiredByRatio),
+                    requiredSpan = MIN_MATCHED_FRAME_GAP
+                )
+            }
+
+            private fun ceilPercent(value: Int, percent: Int): Int {
+                return (value * percent + 99) / 100
+            }
+        }
+    }
+
     private companion object {
         const val MIN_MATCHED_FRAME_COUNT = 2
         const val MIN_MATCHED_FRAME_GAP = 2
+        const val VIDEO_MATCH_RATIO_PERCENT = 35
+        const val SCREEN_RECORDING_MATCH_RATIO_PERCENT = 45
     }
 }
 
