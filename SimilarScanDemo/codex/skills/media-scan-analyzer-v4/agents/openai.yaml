@@ -1,4 +1,0 @@
-interface:
-  display_name: "Media Scan Analyzer V4"
-  short_description: "Create newbie-friendly media scan diagrams"
-  default_prompt: "Use $media-scan-analyzer-v4 to analyze this media scan project and generate a beginner-friendly technical explanation diagram."
