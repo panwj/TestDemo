@@ -124,13 +124,24 @@ app/build/outputs/apk/debug/app-debug.apk
 ## 目录结构
 
 ```text
-model/        数据模型：媒体资源、扫描结果、扫描阶段
-permission/   target 36 媒体权限处理
-scanner/      MediaStore 批量枚举、缩略图加载、扫描编排
-similarity/   dHash、colorHash、阈值和相似判断
-database/     SQLite 缓存、候选索引、相似组维护
-ui/           ListView/GridView 适配器
-util/         Cursor 和格式化工具
+app/
+  src/main/java/com/example/similarscandemo/
+    permission/   Demo 层权限申请、拒绝后跳转设置等业务交互
+    service/      前台扫描服务，负责把 SDK 同步扫描放到后台线程执行
+    ui/           首页、分类列表、详情页和预览页适配器
+    util/         Demo 展示层格式化和辅助工具
+
+similar-scan-core/
+  src/main/java/com/clean/similarscan/
+    api/          SDK 对外入口、请求参数、观察者和结果模型
+    permission/   SDK 权限状态判断，只判断不弹权限框
+    internal/     SDK 内部数据库、扫描编排、Bitmap 加载和相似算法
+
+docs/
+  current_technical_solution.md        当前 Demo 技术方案
+  media_scan_business_constraints.md   当前业务 Case 和边界约束
+  documentation_inventory.md           文档目录和归档说明
+  archive/                             历史文档归档，不作为当前实现依据
 ```
 
 ## 产品级扫描策略
@@ -188,16 +199,31 @@ MediaStore DATA 真实路径
 
 ## 文档入口
 
-当前代码对应的完整技术方案：
+当前 Demo 技术方案：
 
 ```text
 docs/current_technical_solution.md
 ```
 
-文档清理和历史文档状态：
+SDK 能力和接入入口：
+
+```text
+similar-scan-core/README.md
+similar-scan-core/docs/core-technical-design.md
+similar-scan-core/docs/integration-guide.md
+```
+
+业务边界和权限、删除、中断场景 Case：
+
+```text
+docs/media_scan_business_constraints.md
+```
+
+文档清理、活跃文档和历史归档说明：
 
 ```text
 docs/documentation_inventory.md
+docs/archive/
 ```
 
 项目内 Codex skill：

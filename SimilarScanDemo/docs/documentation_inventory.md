@@ -1,68 +1,69 @@
-# 文档清理评估
+# 文档目录与维护规则
 
-## 1. 结论
+本文档用于区分 SimilarScanDemo 当前有效文档和历史归档文档。新人接手项目时，应优先阅读活跃文档；
+`docs/archive/` 只作为问题复盘、竞品对齐和历史决策查证资料，不作为当前实现依据。
 
-当前文档数量较多，但不建议直接删除。原因是其中多份文档记录了竞品反编译、CSV 排查、
-视频分组差异和每一轮决策过程，后续复盘问题时仍有价值。
-
-建议采用以下策略：
+## 1. 目录分层
 
 ```text
-当前实现说明 -> 只看 current_technical_solution.md
-历史排查记录 -> 保留，但不作为当前实现依据
-明显过期设计 -> 保留并标记为历史，不再继续维护
+docs/
+  current_technical_solution.md        当前 Demo 技术方案
+  media_scan_business_constraints.md   当前业务边界和 Case
+  documentation_inventory.md           当前文档索引
+  archive/                             历史文档归档，不作为当前实现依据
+
+similar-scan-core/
+  README.md                            SDK 能力和接入入口
+  docs/core-technical-design.md        SDK 核心技术设计
+  docs/integration-guide.md            SDK 接入指南
 ```
 
 ## 2. 当前应优先阅读
 
 | 文档 | 状态 | 用途 |
 | --- | --- | --- |
-| `README.md` | 当前 | 工程入口、功能摘要和构建说明 |
-| `docs/current_technical_solution.md` | 当前 | 当前代码对应的完整技术方案 |
-| `docs/documentation_inventory.md` | 当前 | 文档状态说明 |
-| `codex/skills/media-scan-analyzer/SKILL.md` | 当前 | 项目内 Codex skill，用于图库扫描逻辑分析和技术图输出 |
-| `docs/generated/media-scan-analyzer/review/media_scan_infographic_review.svg/png` | 审核稿 | 信息图审核稿，供用户互动式确认 |
-| `docs/generated/media-scan-analyzer/final/media_scan_infographic_final.svg/png` | 最终稿 | 用户审核通过后的最终信息图 |
+| `README.md` | 当前 | Demo 工程入口、功能摘要、构建说明和文档导航 |
+| `similar-scan-core/README.md` | 当前 | SDK module 能力边界、对外 API 和接入入口 |
+| `similar-scan-core/docs/core-technical-design.md` | 当前 | SDK 内部扫描、指纹、分组、删除一致性和性能策略 |
+| `similar-scan-core/docs/integration-guide.md` | 当前 | SDK 接入、权限申请、后台扫描、删除流程和宿主职责 |
+| `docs/current_technical_solution.md` | 当前 | Demo 基于 SDK 的当前扫描、展示和竞品兼容方案 |
+| `docs/media_scan_business_constraints.md` | 当前 | 权限、部分授权、扫描中断、系统干扰和删除确认等业务 Case |
+| `docs/documentation_inventory.md` | 当前 | 文档分层、归档说明和维护规则 |
 
-## 3. 可作为历史参考
+## 3. 历史归档文档
+
+以下文档已移动到 `docs/archive/`。它们保留了竞品分析、CSV 排查、算法对齐和历史决策过程，
+但其中的功能清单、包名、路径、阈值、指纹尺寸或架构描述可能已经被当前代码覆盖。
 
 | 文档 | 状态 | 说明 |
 | --- | --- | --- |
-| `docs/async_scan_and_user_mutation_design.md` | 历史设计，部分仍有效 | 异步扫描、删除状态、revision 思路仍与当前代码一致，但未覆盖最新首页节流刷新和 Other 预览限制 |
-| `docs/core_similarity_alignment_audit.md` | 历史审计 | 记录 v14/v15 后的核心审计，部分阈值和结论已被最新代码覆盖 |
-| `docs/media_classification_and_count_fix.md` | 历史问题单 | 记录 214 资源计数差异和 Duplicate/Similar 互斥修复 |
-| `docs/v14_core_scan_alignment_audit.md` | 历史审计 | v14 时点，不代表当前实现 |
-| `docs/v15_alignment_changes_and_decisions.md` | 历史决策 | 记录删除 native so、删除音频、视频路径行为等决策 |
-| `docs/v16_video_grouping_analysis.md` | 历史问题单 | 记录视频大组问题分析，不代表当前最终阈值和 UI 性能优化 |
-| `docs/competitor_alignment_1_10_implementation.md` | 历史实现说明 | 记录早期 1～10 点对齐实现，未覆盖最新权限链路和首页性能优化 |
-| `docs/competitor_gap_analysis_and_upgrade.md` | 过期改造说明 | 包含音频能力等旧内容，不应作为当前功能清单 |
-| `docs/product_level_similarity_scan_design.md` | 过期设计稿 | 早期产品级方案，包含音频章节和旧阈值描述，不应作为当前技术依据 |
+| `docs/archive/async_scan_and_user_mutation_design.md` | 历史设计，部分仍有效 | 异步扫描、删除状态、revision 思路仍有参考价值，但未覆盖最新 SDK 边界和中断 Case |
+| `docs/archive/core_similarity_alignment_audit.md` | 历史审计 | 记录早期核心扫描审计，部分阈值和结论已被当前实现覆盖 |
+| `docs/archive/media_classification_and_count_fix.md` | 历史问题单 | 记录 214 资源计数差异、Duplicate/Similar 互斥和旧视频分组修复 |
+| `docs/archive/v14_core_scan_alignment_audit.md` | 历史审计 | v14 时点的竞品对齐审计，不代表当前 SDK 化后的实现 |
+| `docs/archive/v15_alignment_changes_and_decisions.md` | 历史决策 | 记录删除 native so、删除音频、视频路径行为等决策 |
+| `docs/archive/v16_video_grouping_analysis.md` | 历史问题单 | 记录视频大组问题分析，不代表当前最终视频策略和性能优化 |
+| `docs/archive/competitor_alignment_1_10_implementation.md` | 历史实现说明 | 记录早期 1～10 点对齐实现，未覆盖最新权限链路、SDK 拆分和业务 Case |
+| `docs/archive/competitor_gap_analysis_and_upgrade.md` | 过期改造说明 | 包含旧功能清单和音频相关描述，不应作为当前功能依据 |
+| `docs/archive/product_level_similarity_scan_design.md` | 过期设计稿 | 早期产品级方案草稿，包含音频章节、旧路径和旧阈值口径 |
 
-## 4. 是否删除过期文档
+## 4. 是否删除归档文档
 
-当前不建议删除，建议后续稳定后统一归档：
+当前不建议删除 `docs/archive/` 中的文档。
 
-```text
-docs/archive/
-```
+原因：
 
-可归档候选：
+- 归档文档包含竞品反编译路径、CSV 结论、真机差异和历史判断依据。
+- 当前项目仍可能继续对齐竞品结果，历史证据有助于快速定位为什么做过某个决策。
+- 后续如果要写正式 PRD、技术白皮书或复盘报告，可以从归档文档中提取证据。
 
-- `product_level_similarity_scan_design.md`
-- `competitor_gap_analysis_and_upgrade.md`
-- `v14_core_scan_alignment_audit.md`
-- `v15_alignment_changes_and_decisions.md`
-- `v16_video_grouping_analysis.md`
-- `media_classification_and_count_fix.md`
-
-暂不删除的理由：
-
-- 这些文档包含竞品反编译路径、CSV 结论和历史判断依据。
-- 当前仍在与竞品结果对齐，删除后会降低问题回溯效率。
-- 后续若要写正式 PRD/技术白皮书，可从这些历史文档提取证据。
+如果后续确认某份归档文档没有任何查证价值，再单独删除，不做批量清理。
 
 ## 5. 后续维护规则
 
-- 新问题只更新 `current_technical_solution.md` 和必要的问题单。
-- 历史文档不再补丁式维护，避免多个文档出现相互矛盾的“当前方案”。
-- README 只保留摘要和入口链接，不再展开全部算法细节。
+- 当前功能、算法、性能和业务边界变更，应优先更新活跃文档。
+- 历史归档文档原则上不再补丁式维护，避免多个文件出现互相矛盾的“当前方案”。
+- 新的问题排查文档如果只是阶段性记录，完成后应直接放入 `docs/archive/`。
+- 新的长期有效设计文档才放在 `docs/` 第一层。
+- SDK 对外能力变化，应同步更新 `similar-scan-core/README.md` 和 `similar-scan-core/docs/integration-guide.md`。
+- SDK 内部算法、数据库、指纹或分组策略变化，应同步更新 `similar-scan-core/docs/core-technical-design.md`。

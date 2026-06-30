@@ -141,7 +141,7 @@ scanner/MediaBitmapLoader.loadFingerprintBitmap()
 API 29+:
 1. ContentResolver.loadThumbnail(
      MediaStore.Images.Media.EXTERNAL_CONTENT_URI + mediaStoreId,
-     Size(1024, 1024),
+     Size(256, 256),
      null
    )
 
@@ -150,9 +150,13 @@ API 29+:
 3. 查询 MediaStore.MediaColumns.DATA 后 BitmapFactory.decodeFile(path)
 ```
 
-因此图片分析使用的 Bitmap 是 1024 以内的系统缩略图或降采样 Bitmap。
+因此图片分析默认使用最大边 256 的系统缩略图或降采样 Bitmap。`SimilarScanRequest.imageFingerprintSize`
+允许在 96 到 512 之间调整，当前 Demo 保持默认 256，以降低 MediaStore 缩略图读取、
+缩放、像素遍历和 GC 成本。
 
-UI 展示图片使用 `loadBitmap()`，优先 `resolver.loadThumbnail(asset.uri)`，失败后走降采样解码。指纹输入和 UI 展示路径相近，但不是完全同一方法。
+UI 展示图片使用 `loadBitmap()`，默认请求 1024 以内的预览图，优先
+`resolver.loadThumbnail(asset.uri)`，失败后走降采样解码。指纹输入和 UI 展示路径相近，
+但尺寸和调用入口不是完全同一方法。
 
 ## 6. 视频和录屏指纹 Bitmap 获取
 
