@@ -6,10 +6,10 @@ import android.os.Build
 /**
  * 计算图片组合指纹。
  *
- * imageHash 仅使用项目根目录 DHash.kt 对应的 Kotlin 双线性采样实现。
- * colorHash 始终使用与参考规则一致的 RGB 8x3 分桶算法。
+ * imageHash 使用 Kotlin 双线性采样 dHash 实现；colorHash 使用 RGB 8x3 分桶算法。
  */
 object HashCalculator {
+    /** 从已经加载好的 Bitmap 生成结构指纹和颜色指纹。 */
     fun buildHash(source: Bitmap): CombinedHash {
         return CombinedHash(
             imageHash = KotlinDHash.fromBitmap(source),
@@ -20,7 +20,7 @@ object HashCalculator {
     /**
      * RGB 颜色直方图：每个颜色通道按 32 为步长分为 8 桶。
      *
-     * 除数使用像素数 / 16，与当前实现保持一致。
+     * 除数使用像素数 / 16，使输出值落在更适合阈值比较的范围内。
      */
     private fun colorHash(source: Bitmap): Array<DoubleArray> {
         /*

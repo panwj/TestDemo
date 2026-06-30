@@ -34,6 +34,12 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         return loadFingerprintBitmapWithSource(asset, thumbSize)?.bitmap
     }
 
+    /**
+     * 加载图片/截图指纹 Bitmap，并记录实际来源。
+     *
+     * 来源统计会写入 ScanMetrics，用于判断真机扫描耗时主要来自系统缩略图、URI 解码还是
+     * DATA 文件路径兜底。返回的 Bitmap 已经被压到 thumbSize 内，调用方使用完必须回收。
+     */
     fun loadFingerprintBitmapWithSource(asset: MediaAsset, thumbSize: Int = 1024): FingerprintBitmap? {
         if (Build.VERSION.SDK_INT >= 29) {
             try {
@@ -77,6 +83,12 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         }
     }
 
+    /**
+     * 加载 UI 预览图。
+     *
+     * 该方法不参与相似判断，只服务列表、详情和大图预览。视频封面为了贴近系统相册展示，
+     * 优先走 0ms 同步关键帧；图片预览则优先使用系统缩略图。
+     */
     fun loadBitmap(asset: MediaAsset, thumbSize: Int = 1024): Bitmap? {
         if (asset.kind == MediaKind.VIDEO || asset.kind == MediaKind.SCREEN_RECORDING) {
             /*
@@ -116,6 +128,9 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         }
     }
 
+    /**
+     * Android 9 及以下的图片系统缩略图读取入口。
+     */
     private fun legacyImageThumbnail(asset: MediaAsset): Bitmap? {
         return try {
             @Suppress("DEPRECATION")
@@ -164,6 +179,9 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         }
     }
 
+    /**
+     * 通过 content:// URI 解码 Bitmap，并用 inSampleSize 控制内存峰值。
+     */
     private fun decodeSampledBitmap(uri: Uri, targetSize: Int): Bitmap? {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -180,6 +198,9 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         }
     }
 
+    /**
+     * 通过 DATA 文件路径解码 Bitmap，作为 URI 解码失败后的最后兜底。
+     */
     private fun decodeSampledBitmap(path: String, targetSize: Int): Bitmap? {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -213,6 +234,9 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         return scaled
     }
 
+    /**
+     * 计算 BitmapFactory 的 2 的幂采样值，避免解码出远大于目标尺寸的 Bitmap。
+     */
     private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
         val height = options.outHeight
         val width = options.outWidth
@@ -227,6 +251,11 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         return max(1, inSampleSize)
     }
 
+    /**
+     * 从 MediaStore 查询 DATA 文件路径。
+     *
+     * 分区存储环境下 DATA 可能为空或不可读，因此调用方只能把它作为兜底路径。
+     */
     private fun pathFromUri(uri: Uri): String? {
         val projection = arrayOf(MediaStore.MediaColumns.DATA)
         return resolver.query(uri, projection, null, null, null).useCursor { cursor ->
@@ -235,11 +264,17 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
     }
 }
 
+/**
+ * 指纹 Bitmap 及其来源。
+ */
 data class FingerprintBitmap(
     val bitmap: Bitmap,
     val source: FingerprintBitmapSource
 )
 
+/**
+ * 指纹 Bitmap 来源，用于扫描指标统计和性能排查。
+ */
 enum class FingerprintBitmapSource {
     SYSTEM_MEDIASTORE_THUMBNAIL,
     SYSTEM_LOAD_THUMBNAIL,

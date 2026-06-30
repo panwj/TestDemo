@@ -148,7 +148,9 @@ internal class VideoFingerprintCalculator(context: Context) {
     }
 
     /**
-     * 复现参考规则传入真实文件路径的方式；无法读取 DATA 时直接生成无效指纹。
+     * 读取 MediaStore DATA 对应的真实文件路径。
+     *
+     * 部分设备或云端媒体可能没有可读本地路径，调用方会继续尝试 uri 文件描述符。
      */
     @Suppress("DEPRECATION")
     private fun mediaPath(asset: MediaAsset): String? {
@@ -163,6 +165,11 @@ internal class VideoFingerprintCalculator(context: Context) {
         }
     }
 
+    /**
+     * 为 MediaMetadataRetriever 设置数据源。
+     *
+     * 先使用本地文件路径，失败后回退到 uri 文件描述符，以兼容分区存储和部分相册实现。
+     */
     private fun setRetrieverDataSource(
         retriever: MediaMetadataRetriever,
         asset: MediaAsset
@@ -205,6 +212,12 @@ internal class VideoFingerprintCalculator(context: Context) {
         return positions.map { durationMs * it }.distinct()
     }
 
+    /**
+     * 构建固定间隔抽帧时间。
+     *
+     * 目标是控制在 7～13 帧：短视频使用最小间隔，中长视频使用 7 帧等距，
+     * 超长视频先按最大间隔取点，超过上限后再压缩为 13 帧等距。
+     */
     private fun buildReferenceSampleTimes(durationMs: Double): List<Double> {
         val duration = durationMs.toLong().coerceAtLeast(0L)
         if (duration <= 0L) return listOf(0.0)
@@ -230,6 +243,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         return times.distinct().map(Long::toDouble)
     }
 
+    /** 在 0..duration 范围内生成包含首尾的等距时间点。 */
     private fun buildEvenlySpacedTimes(durationMs: Long, frameCount: Int): List<Long> {
         val count = frameCount.coerceAtLeast(2)
         val interval = durationMs.toDouble() / (count - 1).toDouble()
@@ -238,6 +252,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         }
     }
 
+    /** 按固定间隔生成时间点，并确保最后一帧覆盖视频结尾。 */
     private fun buildIntervalTimes(durationMs: Long, intervalMs: Long): List<Long> {
         val safeInterval = intervalMs.coerceAtLeast(1L)
         val times = ArrayList<Long>()
@@ -252,6 +267,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         return times
     }
 
+    /** 根据系统 API 能力抽取 9x8 指纹帧。 */
     private fun extractFrame(retriever: MediaMetadataRetriever, timeUs: Long): Bitmap? {
         return when {
             Build.VERSION.SDK_INT >= 30 -> {
@@ -304,6 +320,11 @@ internal class VideoFingerprintCalculator(context: Context) {
         }
     }
 
+    /**
+     * 判断是否为低信息量帧。
+     *
+     * 黑屏、白屏、纯色页或轻微渐变页会降低相似视频准确率，非固定间隔模式下会过滤。
+     */
     private fun isLowInformationFrame(bitmap: Bitmap): Boolean {
         val width = bitmap.width
         val height = bitmap.height
@@ -326,6 +347,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         return range < LOW_INFORMATION_LUMA_RANGE && averageEdge < LOW_INFORMATION_EDGE_AVERAGE
     }
 
+    /** 将像素转换为亮度值，用于低信息量帧检测。 */
     private fun luminance(pixel: Int): Int {
         val red = (pixel shr 16) and 0xFF
         val green = (pixel shr 8) and 0xFF
@@ -333,6 +355,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         return (red * 299 + green * 587 + blue * 114) / 1000
     }
 
+    /** 根据有效帧数量和模式标记指纹来源，供比较阶段选择策略。 */
     private fun videoFingerprintSource(
         frames: List<CombinedHash>,
         hasSystemThumbnail: Boolean,
@@ -352,10 +375,12 @@ internal class VideoFingerprintCalculator(context: Context) {
         }
     }
 
+    /** 固定间隔模式保留无效占位，其它模式过滤低信息量帧以降低误合并。 */
     private fun VideoFingerprintMode.shouldFilterLowInformationFrames(): Boolean {
         return this != VideoFingerprintMode.REFERENCE_COMPAT
     }
 
+    /** 生成稳定的无效指纹对象，避免上层处理 null。 */
     private fun invalidFingerprint() = VideoFingerprint(
         frames = listOf(INVALID_HASH),
         source = VideoFingerprintSource.MMR_FRAMES

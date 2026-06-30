@@ -60,6 +60,13 @@ internal class SimilarMediaScanner(context: Context) {
         NamedThreadFactory("similar-video")
     )
 
+    /**
+     * 执行一次同步扫描。
+     *
+     * 该方法会阻塞当前线程，宿主层必须放在前台服务、Worker 或其他后台线程中调用。
+     * forceFull 只表示全量枚举和媒体库对账，不表示强制重算全部指纹；未变化资源会复用旧
+     * fingerprint。扫描过程中所有数据库写入仍由扫描线程串行提交，计算线程只负责生成指纹。
+     */
     fun scan(
         forceFull: Boolean = false,
         imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
@@ -238,8 +245,18 @@ internal class SimilarMediaScanner(context: Context) {
         )
     }
 
+    /**
+     * 加载 UI 预览 Bitmap。
+     *
+     * 该入口不参与指纹计算，供 SDK 对外 imageLoader/client 复用。
+     */
     fun loadBitmap(asset: MediaAsset, thumbSize: Int = 1024) = bitmapLoader.loadBitmap(asset, thumbSize)
 
+    /**
+     * 读取缓存分组。
+     *
+     * 用于 App 启动后先展示上次扫描结果，也用于扫描中按进度刷新当前已落库结果。
+     */
     fun loadCachedGroups(limit: Int = MAX_GROUPS_TO_SHOW) = database.loadGroups(limit)
 
     /**
@@ -252,6 +269,11 @@ internal class SimilarMediaScanner(context: Context) {
         database.close()
     }
 
+    /**
+     * 提交图片/截图指纹计算任务。
+     *
+     * 任务只做 Bitmap 加载、dHash/colorHash 和质量分计算，不直接写数据库。
+     */
     private fun submitVisualJob(
         token: AssetScanToken,
         asset: MediaAsset,
@@ -274,6 +296,11 @@ internal class SimilarMediaScanner(context: Context) {
         )
     }
 
+    /**
+     * 提交图片/截图计算结果。
+     *
+     * 这里完成重复候选查找、相似候选召回、revision 乐观锁提交、分组关系写入和 BK-Tree 更新。
+     */
     private fun commitVisualResult(
         computed: VisualComputedFingerprint,
         metrics: ScanMetrics,
@@ -365,6 +392,11 @@ internal class SimilarMediaScanner(context: Context) {
         visualHashCache.getValue(asset.kind)[token.assetId] = visual.hash
     }
 
+    /**
+     * 提交视频/录屏指纹计算任务。
+     *
+     * 视频指纹可能涉及多次 MMR 抽帧，因此使用独立线程池，避免阻塞图片扫描。
+     */
     private fun submitVideoJob(
         token: AssetScanToken,
         asset: MediaAsset,
@@ -392,6 +424,12 @@ internal class SimilarMediaScanner(context: Context) {
         )
     }
 
+    /**
+     * 提交视频/录屏计算结果。
+     *
+     * 提交流程先查询候选并完成多帧精判，再通过 revision 乐观锁写入 fingerprint。
+     * 如果资源在计算期间被删除，markVideoFingerprintDone 会失败，后续分组写入会被放弃。
+     */
     private fun commitVideoResult(
         computed: VideoComputedFingerprint,
         metrics: ScanMetrics,
@@ -429,6 +467,11 @@ internal class SimilarMediaScanner(context: Context) {
         }
     }
 
+    /**
+     * 从待提交队列取出一个任务并提交结果。
+     *
+     * preferredType 用于当前类型队列满时优先释放同类型任务，降低图片/视频互相挤压。
+     */
     private fun commitNextJob(
         pendingJobs: FingerprintJobScheduler,
         metrics: ScanMetrics,
@@ -451,6 +494,11 @@ internal class SimilarMediaScanner(context: Context) {
         }
     }
 
+    /**
+     * 非阻塞提交所有已经完成的任务。
+     *
+     * 每个 MediaStore 批次结束后调用一次，让 UI 尽快看到已完成的扫描结果。
+     */
     private fun commitCompletedJobs(
         pendingJobs: FingerprintJobScheduler,
         metrics: ScanMetrics,
@@ -468,12 +516,18 @@ internal class SimilarMediaScanner(context: Context) {
         }
     }
 
+    /**
+     * 生成图片/截图视觉指纹。
+     *
+     * 相似判断只依赖 dHash + colorHash；质量分只用于 Best 排序，因此当前主链路使用轻量
+     * 元数据质量分，避免首次扫描时为每张图片额外做清晰度/曝光采样。
+     */
     private fun buildVisualFingerprint(
         asset: MediaAsset,
         metrics: ScanMetrics,
         imageFingerprintSize: Int
     ): VisualFingerprintResult? {
-        // 指纹输入走参考帧加载；UI 预览仍通过 loadBitmap() 使用真实媒体 URI。
+        // 指纹输入走扫描专用缩略图加载；UI 预览仍通过 loadBitmap() 使用真实媒体 URI。
         val fingerprintBitmap = metrics.measure("load_fingerprint_bitmap") {
             bitmapLoader.loadFingerprintBitmapWithSource(asset, imageFingerprintSize)
         } ?: return null
@@ -491,7 +545,7 @@ internal class SimilarMediaScanner(context: Context) {
                 hash = metrics.measure("calculate_image_hash") { HashCalculator.buildHash(bitmap) },
                 qualityScore = metrics.measure("calculate_quality_score") {
                     /*
-                     * 首次扫描阶段只写入轻量元数据质量分，避免 9010 张图片都做清晰度/
+                     * 首次扫描阶段只写入轻量元数据质量分，避免每张图片都做清晰度/
                      * 曝光采样。相似/相同识别只依赖 dHash + colorHash，不依赖质量分；
                      * 质量分仅用于 Best 排序，因此主链路先用分辨率、收藏、编辑状态兜底。
                      */
@@ -519,6 +573,12 @@ internal class SimilarMediaScanner(context: Context) {
         }
     }
 
+    /**
+     * 视频候选预筛。
+     *
+     * 只要两段视频任意有效帧的 dHash 距离落在最大候选范围内，才进入完整 colorHash +
+     * 多帧精判。该预筛只减少无意义候选，不改变最终相似阈值。
+     */
     private fun hasAnyFrameWithinCandidateDistance(
         first: VideoFingerprint,
         second: VideoFingerprint,
@@ -555,10 +615,16 @@ private data class VisualFingerprintResult(
     val qualityScore: Double
 )
 
+/**
+ * 一个等待提交的异步指纹任务。
+ */
 private class PendingFingerprintJob(
     val type: FingerprintJobType,
     val future: Future<ComputedFingerprint>
 ) {
+    /**
+     * 等待任务完成，并展开 ExecutionException 中的真实异常。
+     */
     fun await(): ComputedFingerprint {
         return try {
             future.get()
@@ -573,6 +639,12 @@ private enum class FingerprintJobType {
     VIDEO
 }
 
+/**
+ * 指纹任务提交队列。
+ *
+ * 该类限制图片和视频的待提交任务数量，避免扫描线程连续提交过多 Bitmap/抽帧任务导致
+ * 内存峰值过高。结果提交仍由扫描线程按队列取出后串行执行。
+ */
 private class FingerprintJobScheduler {
     private val jobs = mutableListOf<PendingFingerprintJob>()
     private var pendingImageCount = 0
@@ -580,6 +652,9 @@ private class FingerprintJobScheduler {
 
     fun isNotEmpty(): Boolean = jobs.isNotEmpty()
 
+    /**
+     * 判断指定类型是否还能继续提交新任务。
+     */
     fun hasCapacity(type: FingerprintJobType): Boolean {
         return pendingCount(type) < maxPendingCount(type)
     }
@@ -591,6 +666,11 @@ private class FingerprintJobScheduler {
 
     fun hasCompletedJob(): Boolean = jobs.any { it.future.isDone }
 
+    /**
+     * 取出下一个需要提交的任务。
+     *
+     * 优先选择已经完成的任务；如果没有完成任务，则优先取 preferredType，最后才取队首任务。
+     */
     fun removeNext(preferredType: FingerprintJobType?): PendingFingerprintJob {
         val completedIndex = jobs.indexOfFirst { it.future.isDone }
         if (completedIndex >= 0) return removeAt(completedIndex)
@@ -655,6 +735,9 @@ private data class VideoComputedFingerprint(
     val fingerprint: VideoFingerprint
 ) : ComputedFingerprint
 
+/**
+ * 给扫描线程池生成可读线程名，方便真机日志和性能分析。
+ */
 private class NamedThreadFactory(private val prefix: String) : ThreadFactory {
     private val nextId = AtomicInteger(1)
 
@@ -665,6 +748,12 @@ private class NamedThreadFactory(private val prefix: String) : ThreadFactory {
     }
 }
 
+/**
+ * 扫描性能指标收集器。
+ *
+ * 该对象会被扫描线程和计算线程同时调用，因此内部写入需要同步。工作线程耗时是累加值，
+ * 不等同于真实墙钟时间；真实耗时以 logSummary 的 elapsed 为准。
+ */
 private class ScanMetrics {
     private val totals = linkedMapOf<String, Long>()
     private val counts = linkedMapOf<String, Int>()

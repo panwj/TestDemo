@@ -8,6 +8,11 @@ import java.security.MessageDigest
  * 文件级 SHA-256，用于严格识别内容完全相同的图片。
  */
 class ContentDigestCalculator(private val resolver: ContentResolver) {
+    /**
+     * 以流式方式计算 uri 对应文件的 SHA-256。
+     *
+     * 读取失败返回 null，由上层继续走视觉指纹判断，不让单个文件异常中断扫描。
+     */
     fun sha256(uri: Uri): String? {
         return try {
             val digest = MessageDigest.getInstance("SHA-256")

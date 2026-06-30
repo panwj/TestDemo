@@ -11,6 +11,12 @@ import com.clean.similarscan.internal.model.SimilarGroup
  * 将数据库扫描组转换成与产品首页一致的固定分类顺序。
  */
 object ProductCategoryBuilder {
+    /**
+     * 将底层 SimilarGroup 列表转换成产品首页固定分类。
+     *
+     * 数据库输出的是相似组、重复组和 Other 组；首页还需要把 Other Photos 拆出 Chat Photos，
+     * 并按固定 ProductCategoryType 顺序返回，方便宿主 UI 直接渲染。
+     */
     fun build(groups: List<SimilarGroup>): List<ProductCategory> {
         /*
          * 数据库已经保证 Duplicate/Similar 互斥；这里再做一次展示层防御，
@@ -67,6 +73,9 @@ object ProductCategoryBuilder {
         }
     }
 
+    /**
+     * 取出指定类型的真实扫描分组，并按组内最新媒体时间倒序展示。
+     */
     private fun matched(
         groups: List<SimilarGroup>,
         category: GroupCategory,
@@ -86,6 +95,12 @@ object ProductCategoryBuilder {
             )
     }
 
+    /**
+     * 把一组散落资产合成一个展示用分组。
+     *
+     * Chat Photos、Other Photos 这类分类不是数据库里的相似组，而是展示层从 Other Photos
+     * 资产中拆分出来的集合，因此需要构造一个虚拟 SimilarGroup。
+     */
     private fun synthetic(
         title: String,
         kind: MediaKind,
@@ -106,6 +121,12 @@ object ProductCategoryBuilder {
         )
     }
 
+    /**
+     * 规范组内排序。
+     *
+     * Similar/Duplicate 组要求 Best 永远排第一，其余资源按媒体时间倒序；Other 类分组不做
+     * Best 提前，只保留时间倒序。
+     */
     private fun sortGroupByMediaTimeDesc(group: SimilarGroup): SimilarGroup {
         val timeSorted = group.assets.sortedWith(MEDIA_TIME_DESC)
         val sortedAssets = if (
@@ -124,6 +145,11 @@ object ProductCategoryBuilder {
         return group.copy(assets = sortedAssets)
     }
 
+    /**
+     * 选择推荐保留资源。
+     *
+     * 质量分最高优先，其次考虑收藏、编辑状态、分辨率、文件大小和拍摄时间。
+     */
     private fun bestAsset(assets: List<MediaAsset>): MediaAsset? {
         return assets.maxWithOrNull(
             compareBy<MediaAsset>(

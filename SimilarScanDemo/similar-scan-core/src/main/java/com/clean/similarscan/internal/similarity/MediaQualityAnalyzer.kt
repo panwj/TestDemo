@@ -5,12 +5,18 @@ import com.clean.similarscan.internal.model.MediaAsset
 import kotlin.math.abs
 
 /**
- * 本地媒体质量评分，用于生成参考式 Best 推荐。
+ * 本地媒体质量评分，用于生成 Best 推荐。
  *
  * 评分综合清晰度、曝光、分辨率、收藏状态和编辑状态。它不上传图片，
  * 只在缩略图上采样计算，避免对大图库产生过高成本。
  */
 object MediaQualityAnalyzer {
+    /**
+     * 计算图片质量分。
+     *
+     * 分值只用于同组内排序，不参与相似判定；因此优先保证稳定和低成本，而不是追求
+     * 绝对画质评价。
+     */
     fun score(bitmap: Bitmap, asset: MediaAsset): Double {
         /*
          * 质量分只需要稳定地比较同组图片谁更适合作为 Best，不需要遍历 1024x1024
@@ -64,6 +70,7 @@ object MediaQualityAnalyzer {
             if (asset.isEdited) 3.0 else 0.0
     }
 
+    /** 将像素转换为 0..255 的亮度值，用于曝光和边缘能量计算。 */
     private fun luminance(pixel: Int): Int {
         val red = (pixel shr 16) and 0xFF
         val green = (pixel shr 8) and 0xFF
@@ -71,6 +78,7 @@ object MediaQualityAnalyzer {
         return (red * 299 + green * 587 + blue * 114) / 1000
     }
 
+    /** 在任意尺寸 Bitmap 上按固定 64x64 网格取样，保证质量评分成本稳定。 */
     private fun sampleLuminance(bitmap: Bitmap): IntArray {
         val result = IntArray(SAMPLE_SIZE * SAMPLE_SIZE)
         val width = bitmap.width

@@ -54,6 +54,9 @@ object KotlinDHash {
         return java.lang.Long.bitCount(first xor second)
     }
 
+    /**
+     * 按 9x8 网格采样灰度值，并逐行比较相邻采样点生成 64 个 bit。
+     */
     private fun computeDHash(bitmap: Bitmap): Long {
         val width = bitmap.width
         val height = bitmap.height
@@ -96,11 +99,13 @@ object KotlinDHash {
         return top * (1.0 - dy) + bottom * dy
     }
 
+    /** 将浮点采样坐标限制在 Bitmap 有效像素范围内。 */
     private fun clampCoordinate(value: Double, size: Int): Double {
         if (size <= 1) return 0.0
         return max(0.0, min(value, (size - 1).toDouble()))
     }
 
+    /** 使用通用亮度权重把 ARGB 像素转换为灰度。 */
     private fun gray(argb: Int): Double {
         val red = (argb ushr 16) and 0xFF
         val green = (argb ushr 8) and 0xFF

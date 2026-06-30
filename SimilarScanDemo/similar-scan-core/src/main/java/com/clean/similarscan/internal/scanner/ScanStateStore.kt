@@ -11,6 +11,11 @@ import android.content.Context
 class ScanStateStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    /**
+     * 读取上一次成功保存的扫描游标。
+     *
+     * 如果上次扫描中断，save() 不会执行，下一次会继续使用旧游标，从而重新覆盖未完成范围。
+     */
     fun checkpoint(): ScanCheckpoint {
         return ScanCheckpoint(
             imageGeneration = preferences.getLong(KEY_IMAGE_GENERATION, 0L),
@@ -20,6 +25,12 @@ class ScanStateStore(context: Context) {
         )
     }
 
+    /**
+     * 判断是否需要退回全量扫描。
+     *
+     * MediaStore version 变化通常意味着系统媒体库有结构性变化；定期全量扫描用于同步系统外
+     * 删除和修复增量游标极端情况下的遗漏。
+     */
     fun shouldRunFullScan(
         currentMediaStoreVersion: String,
         now: Long = System.currentTimeMillis()
@@ -30,6 +41,12 @@ class ScanStateStore(context: Context) {
             now - state.lastFullScanAt >= FULL_SCAN_INTERVAL_MS
     }
 
+    /**
+     * 保存扫描游标。
+     *
+     * 只有完整授权下完成的全量扫描才会刷新 lastFullScanAt；部分授权下不能证明媒体库全集已
+     * 对账完成，因此不会更新完整扫描时间。
+     */
     fun save(
         imageGeneration: Long,
         videoGeneration: Long,
@@ -58,6 +75,9 @@ class ScanStateStore(context: Context) {
     }
 }
 
+/**
+ * 上一次扫描完成后保存的 MediaStore 游标快照。
+ */
 data class ScanCheckpoint(
     val imageGeneration: Long,
     val videoGeneration: Long,

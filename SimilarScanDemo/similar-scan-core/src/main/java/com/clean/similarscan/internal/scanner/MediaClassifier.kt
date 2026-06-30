@@ -9,6 +9,11 @@ import java.util.Locale
  * 分类规则只读取 `_display_name`，不拼接 bucket 或 relative_path，避免目录名造成额外误分类。
  */
 object MediaClassifier {
+    /**
+     * 判断图片 DISPLAY_NAME 是否像截图。
+     *
+     * 只依赖文件名，不使用目录名，避免某些目录包含 screen/screenshot 关键词导致误分类。
+     */
     fun looksLikeScreenshot(displayName: String): Boolean {
         val text = displayName.lowercase(Locale.ROOT)
         return text.contains("screenshot") ||
@@ -18,7 +23,11 @@ object MediaClassifier {
             text.startsWith("screen_")
     }
 
-    /** 录屏关键词集合。 */
+    /**
+     * 判断视频 DISPLAY_NAME 是否像录屏。
+     *
+     * 录屏关键词通常来自系统录屏、投屏、镜像或第三方录制工具的文件名。
+     */
     fun looksLikeScreenRecording(displayName: String): Boolean {
         val text = displayName.lowercase(Locale.ROOT)
         return text.contains("screen_recording") ||
@@ -36,10 +45,18 @@ object MediaClassifier {
             text.contains("cast")
     }
 
+    /**
+     * 判断 Other Photos 中的资源是否属于聊天图片。
+     *
+     * 聊天图片不是基础媒体类型，只是首页展示分类，因此不参与相似/相同判断。
+     */
     fun looksLikeChatPhoto(asset: com.clean.similarscan.internal.model.MediaAsset): Boolean {
         return asset.chatSource != null || chatSource(asset.name, asset.bucket, asset.pathHint) != null
     }
 
+    /**
+     * 从文件名、相册名、相对路径中识别聊天应用来源。
+     */
     fun chatSource(vararg values: String): String? {
         val text = values.joinToString(" ").lowercase(Locale.ROOT)
         return when {

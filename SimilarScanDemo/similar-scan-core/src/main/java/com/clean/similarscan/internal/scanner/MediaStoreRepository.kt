@@ -17,11 +17,20 @@ import java.util.Date
 
 /**
  * 负责从 MediaStore 读取原始媒体列表。
+ *
+ * 该类只做“资源枚举和基础字段归一化”，不计算指纹、不访问数据库、不做相似判断。
+ * 上层扫描器根据这里产出的 MediaAsset 决定是否复用旧指纹或提交计算任务。
  */
 class MediaStoreRepository(context: Context) {
     private val appContext = context.applicationContext
     private val resolver: ContentResolver = appContext.contentResolver
 
+    /**
+     * 按批枚举当前授权范围内的图片和视频资源。
+     *
+     * generationAfter 参数只在 API 30+ 且大于 0 时生效；传入 0 表示全量枚举。
+     * 当图片和视频权限都可用时，采用交错批次输出，避免大量图片把视频任务完全排到最后。
+     */
     fun forEachMediaBatch(
         batchSize: Int,
         imageGenerationAfter: Long = 0L,
@@ -47,6 +56,11 @@ class MediaStoreRepository(context: Context) {
         }
     }
 
+    /**
+     * 图片、视频双 Cursor 交替输出。
+     *
+     * 每次最多输出一个图片批次和一个视频批次，让图片线程池和视频线程池都能尽早开始工作。
+     */
     private fun forEachInterleavedMediaBatch(
         batchSize: Int,
         imageGenerationAfter: Long,
@@ -89,6 +103,11 @@ class MediaStoreRepository(context: Context) {
         }
     }
 
+    /**
+     * 从指定 Cursor 中取出一个批次。
+     *
+     * 返回 true 表示本次读满 batchSize，Cursor 后面可能还有数据；返回 false 表示已经读到末尾。
+     */
     private fun emitBatch(
         cursor: Cursor,
         batchSize: Int,
@@ -105,6 +124,11 @@ class MediaStoreRepository(context: Context) {
         return batch.size == batchSize
     }
 
+    /**
+     * 只枚举图片资源。
+     *
+     * 用于仅图片授权，或者宿主产品只想处理图片集合的场景。
+     */
     private fun forEachImageBatch(
         batchSize: Int,
         generationAfter: Long,
@@ -134,6 +158,11 @@ class MediaStoreRepository(context: Context) {
         if (batch.isNotEmpty()) onBatch(batch.toList())
     }
 
+    /**
+     * 只枚举视频资源。
+     *
+     * 用于仅视频授权，或者宿主产品只想处理视频集合的场景。
+     */
     private fun forEachVideoBatch(
         batchSize: Int,
         generationAfter: Long,
@@ -163,6 +192,12 @@ class MediaStoreRepository(context: Context) {
         if (batch.isNotEmpty()) onBatch(batch.toList())
     }
 
+    /**
+     * 查询最近的图片资源。
+     *
+     * 主要用于诊断、调试或非扫描场景。主扫描链路应使用 [forEachMediaBatch]，避免一次性
+     * 把大量资源加载到内存。
+     */
     fun queryImages(limit: Int): List<MediaAsset> {
         val projection = imageProjection()
 
@@ -181,6 +216,11 @@ class MediaStoreRepository(context: Context) {
         }
     }
 
+    /**
+     * 查询最近的视频资源。
+     *
+     * 主要用于诊断、调试或非扫描场景。主扫描链路应使用 [forEachMediaBatch]。
+     */
     fun queryVideos(limit: Int): List<MediaAsset> {
         val projection = videoProjection()
 
@@ -199,6 +239,11 @@ class MediaStoreRepository(context: Context) {
         }
     }
 
+    /**
+     * 图片查询字段。
+     *
+     * 高版本字段按 API 分支加入，避免低版本设备查询不存在的列。
+     */
     private fun imageProjection() = buildList {
         add(MediaStore.Images.Media._ID)
         add(MediaStore.Images.Media.DISPLAY_NAME)
@@ -218,6 +263,9 @@ class MediaStoreRepository(context: Context) {
         }
     }.toTypedArray()
 
+    /**
+     * 视频查询字段。
+     */
     private fun videoProjection() = buildList {
         add(MediaStore.Video.Media._ID)
         add(MediaStore.Video.Media.DISPLAY_NAME)
@@ -238,6 +286,9 @@ class MediaStoreRepository(context: Context) {
         }
     }.toTypedArray()
 
+    /**
+     * 将图片 Cursor 当前行转换成 SDK 内部统一资产模型。
+     */
     private fun imageFromCursor(cursor: android.database.Cursor): MediaAsset {
         val id = cursor.long(MediaStore.Images.Media._ID)
         val name = cursor.string(MediaStore.Images.Media.DISPLAY_NAME)
@@ -264,8 +315,8 @@ class MediaStoreRepository(context: Context) {
             mimeType = cursor.string(MediaStore.Images.Media.MIME_TYPE),
             isFavorite = Build.VERSION.SDK_INT >= 30 && cursor.int(MediaStore.Images.Media.IS_FAVORITE) == 1,
             /*
-             * 参考规则构造 CGAsset 时 duplicateReference 使用的 edited 固定为 false。
-             * generation 只用于增量扫描，不能把“数据库记录更新”解释为“用户编辑”。
+             * MediaStore generation 只用于增量扫描，不能把“数据库记录更新”解释为
+             * “用户编辑”。编辑状态后续如需接入，应使用稳定来源单独判断。
              */
             isEdited = false,
             generationAdded = generationAdded,
@@ -274,6 +325,9 @@ class MediaStoreRepository(context: Context) {
         )
     }
 
+    /**
+     * 将视频 Cursor 当前行转换成 SDK 内部统一资产模型。
+     */
     private fun videoFromCursor(cursor: android.database.Cursor): MediaAsset {
         val id = cursor.long(MediaStore.Video.Media._ID)
         val name = cursor.string(MediaStore.Video.Media.DISPLAY_NAME)
@@ -306,10 +360,20 @@ class MediaStoreRepository(context: Context) {
         )
     }
 
+    /**
+     * 生成媒体时间。
+     *
+     * 优先使用拍摄时间；拍摄时间缺失时退回入库时间，保证排序和分组都有稳定时间源。
+     */
     private fun dateFrom(dateTaken: Long, dateAddedSeconds: Long): Date {
         return Date(if (dateTaken > 0L) dateTaken else dateAddedSeconds * 1000L)
     }
 
+    /**
+     * 生成 API 30+ 增量扫描查询条件。
+     *
+     * 低版本或 generationAfter 为 0 时返回空条件，表示全量读取当前授权范围内资源。
+     */
     private fun generationSelection(column: String, generationAfter: Long): Pair<String, Array<String>?> {
         return if (Build.VERSION.SDK_INT >= 30 && generationAfter > 0L) {
             " AND $column > ?" to arrayOf(generationAfter.toString())

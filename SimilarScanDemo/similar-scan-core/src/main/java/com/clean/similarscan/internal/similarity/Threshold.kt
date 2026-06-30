@@ -11,8 +11,11 @@ import com.clean.similarscan.internal.model.MediaKind
  * colorRanges 表示 dHash 处于中间区间时，再用 colorHash 过滤误判。
  */
 data class Threshold(
+    /** dHash 汉明距离落在该范围内时直接判定相似。 */
     val directImageDistance: LongRange,
+    /** dHash 汉明距离必须小于该值，等于或超过时直接判定不相似。 */
     val maxImageDistanceExclusive: Long,
+    /** dHash 中间距离区间需要叠加颜色距离判断。 */
     val colorRanges: List<ColorRange>
 ) {
     companion object {
@@ -62,6 +65,7 @@ data class Threshold(
          */
         private val screenRecordingThreshold = strictVideoLikeThreshold
 
+        /** 根据媒体类型选择最终相似判断阈值。 */
         fun forKind(kind: MediaKind): Threshold {
             return when (kind) {
                 MediaKind.PHOTO -> photoThreshold
@@ -82,6 +86,7 @@ data class Threshold(
     }
 }
 
+/** dHash 中间距离对应的 colorHash 允许范围。 */
 data class ColorRange(
     val imageDistance: LongRange,
     val colorDistance: LongRange
