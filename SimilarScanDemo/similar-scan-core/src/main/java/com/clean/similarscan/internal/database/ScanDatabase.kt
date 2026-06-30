@@ -2,10 +2,18 @@ package com.clean.similarscan.internal.database
 
 import android.content.ContentValues
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
-import android.database.sqlite.SQLiteStatement
+import android.database.Cursor
 import android.net.Uri
+import androidx.room.ColumnInfo
+import androidx.room.Database
+import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Index
+import androidx.room.PrimaryKey
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteStatement
 import com.clean.similarscan.internal.model.GroupCategory
 import com.clean.similarscan.internal.model.MediaAsset
 import com.clean.similarscan.internal.model.MediaKind
@@ -21,128 +29,267 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private const val DB_NAME = "similar_scan.db"
+private const val DB_VERSION = 27
+
 /**
- * 产品级扫描必须落库：这样才能支持 10 万资源、断点续扫、增量扫描和结果即时展示。
+ * Room 数据库承载扫描库连接。
  *
- * 本 SDK 使用 SQLiteOpenHelper 保持依赖最少；正式项目可平滑替换为 Room。
+ * Entity 只描述扫描缓存表结构；扫描链路仍通过下方原生 SQL 执行复杂查询和批量写入，
+ * 以保证数据库框架切换不改变相似识别结果。
  */
-internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
-    init {
-        /*
-         * 扫描服务会持续写库，详情页/首页会同时读库。WAL 允许读写并发，减少
-         * SQLiteDatabaseLockedException。它必须在数据库第一次打开前设置。
-         */
-        setWriteAheadLoggingEnabled(true)
+@Entity(
+    tableName = "media_asset",
+    indices = [
+        Index(value = ["media_store_id", "type"], unique = true),
+        Index(value = ["type", "fingerprint_status"], name = "idx_asset_type_status"),
+        Index(value = ["state", "type"], name = "idx_asset_state_type"),
+        Index(value = ["type", "duration", "size"], name = "idx_asset_type_duration_size"),
+        Index(value = ["type", "state", "size", "width", "height", "is_edited"], name = "idx_asset_duplicate_ref"),
+        Index(value = ["type", "state", "fingerprint_algorithm_version"], name = "idx_asset_video_candidate")
+    ]
+)
+internal data class MediaAssetEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "media_store_id") val mediaStoreId: Long,
+    val uri: String,
+    val type: String,
+    val name: String,
+    val width: Int?,
+    val height: Int?,
+    val duration: Long?,
+    val size: Long?,
+    @ColumnInfo(name = "created_at") val createdAt: Long?,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long?,
+    @ColumnInfo(name = "date_added", defaultValue = "0") val dateAdded: Long = 0,
+    val bucket: String?,
+    @ColumnInfo(name = "path_hint") val pathHint: String?,
+    @ColumnInfo(name = "mime_type") val mimeType: String?,
+    @ColumnInfo(name = "is_favorite", defaultValue = "0") val isFavorite: Int = 0,
+    @ColumnInfo(name = "is_edited", defaultValue = "0") val isEdited: Int = 0,
+    @ColumnInfo(name = "generation_added", defaultValue = "0") val generationAdded: Long = 0,
+    @ColumnInfo(name = "generation_modified", defaultValue = "0") val generationModified: Long = 0,
+    @ColumnInfo(name = "chat_source") val chatSource: String?,
+    @ColumnInfo(defaultValue = "'ACTIVE'") val state: String = "ACTIVE",
+    @ColumnInfo(name = "state_changed_at", defaultValue = "0") val stateChangedAt: Long = 0,
+    @ColumnInfo(defaultValue = "1") val revision: Long = 1,
+    @ColumnInfo(name = "fingerprint_status") val fingerprintStatus: String,
+    @ColumnInfo(name = "last_scanned_at") val lastScannedAt: Long?,
+    @ColumnInfo(name = "last_seen_scan") val lastSeenScan: String?,
+    @ColumnInfo(name = "source_signature") val sourceSignature: String?,
+    @ColumnInfo(name = "fingerprint_algorithm_version", defaultValue = "0") val fingerprintAlgorithmVersion: Int = 0
+)
+
+@Entity(
+    tableName = "fingerprint",
+    foreignKeys = [
+        ForeignKey(
+            entity = MediaAssetEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["asset_id"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index(value = ["hash_prefix", "aspect_bucket", "duration_bucket"], name = "idx_fingerprint_candidate"),
+        Index(value = ["image_hash"], name = "idx_fingerprint_image_hash"),
+        Index(value = ["duration_bucket", "aspect_bucket"], name = "idx_fingerprint_video_bucket"),
+        Index(value = ["content_sha256"], name = "idx_fingerprint_sha"),
+        Index(value = ["potential_identifier"], name = "idx_fingerprint_potential")
+    ]
+)
+internal data class FingerprintEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "asset_id") val assetId: Long,
+    @ColumnInfo(name = "image_hash") val imageHash: Long,
+    @ColumnInfo(name = "color_hash") val colorHash: String,
+    @ColumnInfo(name = "hash_prefix") val hashPrefix: Int,
+    @ColumnInfo(name = "aspect_bucket") val aspectBucket: Int,
+    @ColumnInfo(name = "duration_bucket") val durationBucket: Long,
+    @ColumnInfo(name = "video_frame_hashes") val videoFrameHashes: String?,
+    @ColumnInfo(name = "video_frame_colors") val videoFrameColors: String?,
+    @ColumnInfo(name = "content_sha256") val contentSha256: String?,
+    @ColumnInfo(name = "quality_score", defaultValue = "0") val qualityScore: Double = 0.0,
+    @ColumnInfo(name = "potential_identifier") val potentialIdentifier: String?,
+    @ColumnInfo(name = "video_fingerprint_source") val videoFingerprintSource: String?
+)
+
+@Entity(tableName = "similar_group")
+internal data class SimilarGroupEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val category: String,
+    val type: String,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
+)
+
+@Entity(
+    tableName = "similar_group_item",
+    primaryKeys = ["group_id", "asset_id"],
+    foreignKeys = [
+        ForeignKey(
+            entity = SimilarGroupEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["group_id"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = MediaAssetEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["asset_id"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index(value = ["asset_id"], name = "idx_group_item_asset")]
+)
+internal data class SimilarGroupItemEntity(
+    @ColumnInfo(name = "group_id") val groupId: Long,
+    @ColumnInfo(name = "asset_id") val assetId: Long
+)
+
+@Database(
+    entities = [
+        MediaAssetEntity::class,
+        FingerprintEntity::class,
+        SimilarGroupEntity::class,
+        SimilarGroupItemEntity::class
+    ],
+    version = DB_VERSION,
+    exportSchema = false
+)
+internal abstract class ScanRoomDatabase : RoomDatabase()
+
+/**
+ * Room 原生 SQL 执行适配层。
+ *
+ * 当前扫描链路包含动态查询、批量插入和 Cursor 分页读取；这层只把原生 SQL 调用转发到
+ * Room 管理的数据库连接，不承担旧版本或旧用户数据兼容职责。
+ */
+private class SqlDb(private val delegate: SupportSQLiteDatabase) {
+    fun setForeignKeyConstraintsEnabled(enabled: Boolean) {
+        delegate.setForeignKeyConstraintsEnabled(enabled)
     }
 
-    override fun onConfigure(db: SQLiteDatabase) {
-        super.onConfigure(db)
+    fun execSQL(sql: String) {
+        delegate.execSQL(sql)
+    }
+
+    fun execSQL(sql: String, bindArgs: Array<out Any?>) {
+        delegate.execSQL(sql, bindArgs)
+    }
+
+    fun rawQuery(sql: String, selectionArgs: Array<String>?): Cursor {
+        return delegate.query(sql, selectionArgs.toBindArgs())
+    }
+
+    fun beginTransaction() {
+        delegate.beginTransaction()
+    }
+
+    fun setTransactionSuccessful() {
+        delegate.setTransactionSuccessful()
+    }
+
+    fun endTransaction() {
+        delegate.endTransaction()
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    fun insert(table: String, nullColumnHack: String?, values: ContentValues): Long {
+        return delegate.insert(table, CONFLICT_NONE, values)
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    fun insertWithOnConflict(
+        table: String,
+        nullColumnHack: String?,
+        values: ContentValues,
+        conflictAlgorithm: Int
+    ): Long {
+        return delegate.insert(table, conflictAlgorithm, values)
+    }
+
+    fun update(
+        table: String,
+        values: ContentValues,
+        whereClause: String?,
+        whereArgs: Array<String>?
+    ): Int {
+        return delegate.update(
+            table,
+            CONFLICT_NONE,
+            values,
+            whereClause,
+            whereArgs.toBindArgs()
+        )
+    }
+
+    fun delete(table: String, whereClause: String?, whereArgs: Array<String>?): Int {
+        return delegate.delete(table, whereClause, whereArgs.toBindArgs())
+    }
+
+    fun compileStatement(sql: String): SupportSQLiteStatement {
+        return delegate.compileStatement(sql)
+    }
+
+    private fun Array<String>?.toBindArgs(): Array<Any?> {
+        return this?.map<String, Any?> { it }?.toTypedArray() ?: emptyArray()
+    }
+
+    companion object {
+        const val CONFLICT_NONE = 0
+        const val CONFLICT_IGNORE = 4
+        const val CONFLICT_REPLACE = 5
+    }
+}
+
+/**
+ * 产品级扫描必须落库：这样才能支持 10 万资源、断点续扫、增量扫描和结果即时展示。
+ */
+internal class ScanDatabase(context: Context) {
+    private val roomDatabase: ScanRoomDatabase = Room.databaseBuilder(
+        context.applicationContext,
+        ScanRoomDatabase::class.java,
+        DB_NAME
+    )
+        /*
+         * 扫描服务会持续写库，详情页/首页会同时读库。WAL 允许读写并发，
+         * 减少数据库锁等待。
+         */
+        .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+        /*
+         * 扫描库保存的是可重建缓存。SDK 仍处于开发验证阶段，内部表结构变化时直接
+         * 重建缓存，避免旧指纹结构混入当前扫描结果。
+         */
+        .fallbackToDestructiveMigration()
+        .addCallback(
+            object : RoomDatabase.Callback() {
+                override fun onOpen(db: SupportSQLiteDatabase) {
+                    super.onOpen(db)
+                    configureDatabase(SqlDb(db))
+                }
+            }
+        )
+        .build()
+
+    private val writableDatabase: SqlDb
+        get() = SqlDb(roomDatabase.openHelper.writableDatabase)
+
+    private val readableDatabase: SqlDb
+        get() = SqlDb(roomDatabase.openHelper.readableDatabase)
+
+    /** 关闭 Room 持有的数据库连接，避免扫描服务结束后连接泄漏。 */
+    fun close() {
+        roomDatabase.close()
+    }
+
+    private fun configureDatabase(db: SqlDb) {
         // 保证删除 media_asset/similar_group 时，关联指纹和组成员不会变成孤立数据。
         db.setForeignKeyConstraintsEnabled(true)
         /*
-         * busy_timeout 属于会返回结果的 PRAGMA。部分 Android SQLite 版本不允许通过
-         * execSQL() 执行这类语句，会在数据库打开阶段抛出 SQLiteException，导致首页启动崩溃。
-         * 使用 rawQuery 后立即关闭 Cursor，可以兼容这些系统版本，同时保留等待写锁释放的能力。
+         * busy_timeout 属于会返回结果的 PRAGMA。使用 query 后立即关闭 Cursor，可以
+         * 兼容不同系统版本，同时保留等待写锁释放的能力。
          */
         db.rawQuery("PRAGMA busy_timeout=3000", null).close()
-    }
-
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            """
-            CREATE TABLE media_asset (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                media_store_id INTEGER NOT NULL,
-                uri TEXT NOT NULL,
-                type TEXT NOT NULL,
-                name TEXT NOT NULL,
-                width INTEGER,
-                height INTEGER,
-                duration INTEGER,
-                size INTEGER,
-                created_at INTEGER,
-                updated_at INTEGER,
-                date_added INTEGER NOT NULL DEFAULT 0,
-                bucket TEXT,
-                path_hint TEXT,
-                mime_type TEXT,
-                is_favorite INTEGER NOT NULL DEFAULT 0,
-                is_edited INTEGER NOT NULL DEFAULT 0,
-                generation_added INTEGER NOT NULL DEFAULT 0,
-                generation_modified INTEGER NOT NULL DEFAULT 0,
-                chat_source TEXT,
-                state TEXT NOT NULL DEFAULT 'ACTIVE',
-                state_changed_at INTEGER NOT NULL DEFAULT 0,
-                revision INTEGER NOT NULL DEFAULT 1,
-                fingerprint_status TEXT NOT NULL,
-                last_scanned_at INTEGER,
-                last_seen_scan TEXT,
-                source_signature TEXT,
-                fingerprint_algorithm_version INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(media_store_id, type)
-            )
-            """.trimIndent()
-        )
-        db.execSQL(
-            """
-            CREATE TABLE fingerprint (
-                asset_id INTEGER PRIMARY KEY
-                    REFERENCES media_asset(id) ON DELETE CASCADE,
-                image_hash INTEGER NOT NULL,
-                color_hash TEXT NOT NULL,
-                hash_prefix INTEGER NOT NULL,
-                aspect_bucket INTEGER NOT NULL,
-                duration_bucket INTEGER NOT NULL,
-                video_frame_hashes TEXT,
-                video_frame_colors TEXT,
-                content_sha256 TEXT,
-                quality_score REAL NOT NULL DEFAULT 0,
-                potential_identifier TEXT,
-                video_fingerprint_source TEXT
-            )
-            """.trimIndent()
-        )
-        db.execSQL(
-            """
-            CREATE TABLE similar_group (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT NOT NULL,
-                type TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            )
-            """.trimIndent()
-        )
-        db.execSQL(
-            """
-            CREATE TABLE similar_group_item (
-                group_id INTEGER NOT NULL
-                    REFERENCES similar_group(id) ON DELETE CASCADE,
-                asset_id INTEGER NOT NULL
-                    REFERENCES media_asset(id) ON DELETE CASCADE,
-                PRIMARY KEY(group_id, asset_id)
-            )
-            """.trimIndent()
-        )
-
-        db.execSQL("CREATE INDEX idx_asset_type_status ON media_asset(type, fingerprint_status)")
-        db.execSQL("CREATE INDEX idx_asset_state_type ON media_asset(state, type)")
-        db.execSQL("CREATE INDEX idx_asset_type_duration_size ON media_asset(type, duration, size)")
-        db.execSQL("CREATE INDEX idx_asset_duplicate_ref ON media_asset(type, state, size, width, height, is_edited)")
-        db.execSQL("CREATE INDEX idx_asset_video_candidate ON media_asset(type, state, fingerprint_algorithm_version)")
-        db.execSQL("CREATE INDEX idx_fingerprint_candidate ON fingerprint(hash_prefix, aspect_bucket, duration_bucket)")
-        db.execSQL("CREATE INDEX idx_fingerprint_image_hash ON fingerprint(image_hash)")
-        db.execSQL("CREATE INDEX idx_fingerprint_video_bucket ON fingerprint(duration_bucket, aspect_bucket)")
-        db.execSQL("CREATE INDEX idx_fingerprint_sha ON fingerprint(content_sha256)")
-        db.execSQL("CREATE INDEX idx_fingerprint_potential ON fingerprint(potential_identifier)")
-        db.execSQL("CREATE INDEX idx_group_item_asset ON similar_group_item(asset_id)")
-    }
-
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS similar_group_item")
-        db.execSQL("DROP TABLE IF EXISTS similar_group")
-        db.execSQL("DROP TABLE IF EXISTS fingerprint")
-        db.execSQL("DROP TABLE IF EXISTS media_asset")
-        onCreate(db)
     }
 
     /**
@@ -261,7 +408,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
                     put("potential_identifier", HashBuckets.potentialIdentifier(asset))
                     putNull("video_fingerprint_source")
                 },
-                SQLiteDatabase.CONFLICT_REPLACE
+                SqlDb.CONFLICT_REPLACE
             )
             db.update(
                 "media_asset",
@@ -306,7 +453,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
                     put("potential_identifier", HashBuckets.potentialIdentifier(asset))
                     put("video_fingerprint_source", fingerprint.source.name)
                 },
-                SQLiteDatabase.CONFLICT_REPLACE
+                SqlDb.CONFLICT_REPLACE
             )
             db.update(
                 "media_asset",
@@ -506,7 +653,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     }
 
     private fun loadExistingSimilarCandidateMap(
-        db: SQLiteDatabase,
+        db: SqlDb,
         kind: MediaKind
     ): Map<Long, Set<Long>> {
         val groupMembers = linkedMapOf<Long, MutableList<Long>>()
@@ -549,7 +696,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
         return candidates
     }
 
-    private fun deleteSimilarGroups(db: SQLiteDatabase, kind: MediaKind) {
+    private fun deleteSimilarGroups(db: SqlDb, kind: MediaKind) {
         db.execSQL(
             """
             DELETE FROM similar_group_item
@@ -567,7 +714,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     }
 
     private fun loadGroupingFingerprints(
-        db: SQLiteDatabase,
+        db: SqlDb,
         kind: MediaKind,
         imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
         videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
@@ -1110,7 +1257,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     }
 
     private fun removeAssetsFromCategory(
-        db: SQLiteDatabase,
+        db: SqlDb,
         assetIds: Set<Long>,
         category: GroupCategory,
         kind: MediaKind
@@ -1134,7 +1281,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
         )
     }
 
-    private fun cleanupGroupsWithLessThanTwoAssets(db: SQLiteDatabase) {
+    private fun cleanupGroupsWithLessThanTwoAssets(db: SqlDb) {
         db.execSQL(
             """
             DELETE FROM similar_group
@@ -1299,14 +1446,14 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
         }
     }
 
-    private fun isTokenActive(db: SQLiteDatabase, token: AssetScanToken): Boolean {
+    private fun isTokenActive(db: SqlDb, token: AssetScanToken): Boolean {
         return db.rawQuery(
             "SELECT 1 FROM media_asset WHERE id=? AND state='ACTIVE' AND revision=?",
             arrayOf(token.assetId.toString(), token.revision.toString())
         ).use { it.moveToFirst() }
     }
 
-    private fun areAssetsActive(db: SQLiteDatabase, firstId: Long, secondId: Long): Boolean {
+    private fun areAssetsActive(db: SqlDb, firstId: Long, secondId: Long): Boolean {
         return db.rawQuery(
             "SELECT COUNT(*) FROM media_asset WHERE id IN (?, ?) AND state='ACTIVE'",
             arrayOf(firstId.toString(), secondId.toString())
@@ -1314,7 +1461,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     }
 
     private fun groupIdForAsset(
-        db: SQLiteDatabase,
+        db: SqlDb,
         assetId: Long,
         category: GroupCategory,
         kind: MediaKind
@@ -1359,7 +1506,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
         insertGroupItem(writableDatabase, groupId, assetId)
     }
 
-    private fun insertGroupItem(db: SQLiteDatabase, groupId: Long, assetId: Long) {
+    private fun insertGroupItem(db: SqlDb, groupId: Long, assetId: Long) {
         db.insertWithOnConflict(
             "similar_group_item",
             null,
@@ -1367,11 +1514,11 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
                 put("group_id", groupId)
                 put("asset_id", assetId)
             },
-            SQLiteDatabase.CONFLICT_IGNORE
+            SqlDb.CONFLICT_IGNORE
         )
     }
 
-    private fun insertGroupItem(statement: SQLiteStatement, groupId: Long, assetId: Long) {
+    private fun insertGroupItem(statement: SupportSQLiteStatement, groupId: Long, assetId: Long) {
         statement.clearBindings()
         statement.bindLong(1, groupId)
         statement.bindLong(2, assetId)
@@ -1548,7 +1695,6 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     }
 
     companion object {
-        private const val DB_NAME = "similar_scan.db"
         /*
          * 首页只需要少量缩略图预览。Other 分类可能包含上千条资源，
          * 如果一次性读入会撑爆 CursorWindow，并让扫描进度广播在主线程崩溃。
@@ -1576,7 +1722,6 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
          * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
          * 7. 完整清晰度/曝光质量分不再阻塞首次扫描主链路。
          */
-        private const val DB_VERSION = 27
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
         private const val FINGERPRINT_ALGORITHM_VERSION = 27
         private const val DEFAULT_IMAGE_FINGERPRINT_SIZE = 256

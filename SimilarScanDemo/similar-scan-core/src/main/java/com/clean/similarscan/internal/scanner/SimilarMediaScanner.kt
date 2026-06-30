@@ -260,8 +260,8 @@ internal class SimilarMediaScanner(context: Context) {
     fun loadCachedGroups(limit: Int = MAX_GROUPS_TO_SHOW) = database.loadGroups(limit)
 
     /**
-     * SimilarMediaScanner 持有 SQLiteOpenHelper。前台服务每次扫描都会创建 scanner，
-     * 扫描结束后必须显式关闭数据库连接，避免系统在 GC 时报告 SQLiteConnection 泄漏。
+     * SimilarMediaScanner 持有 Room 数据库连接。前台服务每次扫描都会创建 scanner，
+     * 扫描结束后必须显式关闭连接，避免系统在 GC 时报告数据库连接泄漏。
      */
     fun close() {
         imageComputeExecutor.shutdownNow()
