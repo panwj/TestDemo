@@ -5,6 +5,8 @@ package com.example.similarscandemo.permission
  */
 enum class MediaAccessLevel {
     NONE,
+    IMAGES_ONLY,
+    VIDEOS_ONLY,
     PARTIAL_VISUAL,
     FULL_VISUAL,
     LEGACY_FULL

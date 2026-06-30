@@ -337,8 +337,12 @@ class MainActivity : Activity() {
 
     private fun permissionStatusMessage(): String {
         return when (MediaPermissionHelper.accessLevel(this)) {
+            MediaAccessLevel.IMAGES_ONLY ->
+                "Photo access granted. Videos will not be scanned."
+            MediaAccessLevel.VIDEOS_ONLY ->
+                "Video access granted. Photos will not be scanned."
             MediaAccessLevel.PARTIAL_VISUAL ->
-                "Limited gallery access. Grant full access to scan newly captured media."
+                "Limited access. Only selected photos and videos can be scanned."
             MediaAccessLevel.FULL_VISUAL, MediaAccessLevel.LEGACY_FULL ->
                 "Gallery access granted."
             MediaAccessLevel.NONE ->

@@ -21,6 +21,8 @@ object MediaPermissionHelper {
     fun accessLevel(context: Context): MediaAccessLevel {
         return when (SimilarScanPermissionChecker.accessLevel(context)) {
             SdkMediaAccessLevel.NONE -> MediaAccessLevel.NONE
+            SdkMediaAccessLevel.IMAGES_ONLY -> MediaAccessLevel.IMAGES_ONLY
+            SdkMediaAccessLevel.VIDEOS_ONLY -> MediaAccessLevel.VIDEOS_ONLY
             SdkMediaAccessLevel.PARTIAL_VISUAL -> MediaAccessLevel.PARTIAL_VISUAL
             SdkMediaAccessLevel.FULL_VISUAL -> MediaAccessLevel.FULL_VISUAL
             SdkMediaAccessLevel.LEGACY_FULL -> MediaAccessLevel.LEGACY_FULL

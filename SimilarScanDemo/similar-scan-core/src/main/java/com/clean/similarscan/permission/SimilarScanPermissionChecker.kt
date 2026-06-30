@@ -31,28 +31,63 @@ object SimilarScanPermissionChecker {
     }
 
     fun accessLevel(context: Context): MediaAccessLevel {
+        return accessState(context).level
+    }
+
+    fun accessState(context: Context): MediaAccessState {
         return when {
             Build.VERSION.SDK_INT >= 34 -> {
                 val hasImages = context.isGranted(Manifest.permission.READ_MEDIA_IMAGES)
                 val hasVideo = context.isGranted(Manifest.permission.READ_MEDIA_VIDEO)
                 val hasPartial = context.isGranted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-                when {
+                val canReadImages = hasImages || hasPartial
+                val canReadVideos = hasVideo || hasPartial
+                val level = when {
                     hasImages && hasVideo -> MediaAccessLevel.FULL_VISUAL
                     hasPartial -> MediaAccessLevel.PARTIAL_VISUAL
+                    hasImages -> MediaAccessLevel.IMAGES_ONLY
+                    hasVideo -> MediaAccessLevel.VIDEOS_ONLY
                     else -> MediaAccessLevel.NONE
                 }
+                MediaAccessState(
+                    level = level,
+                    canReadImages = canReadImages,
+                    canReadVideos = canReadVideos,
+                    hasFullVisualAccess = hasImages && hasVideo,
+                    hasPartialVisualAccess = hasPartial && !(hasImages && hasVideo)
+                )
             }
             Build.VERSION.SDK_INT >= 33 -> {
-                if (context.isGranted(Manifest.permission.READ_MEDIA_IMAGES) &&
-                    context.isGranted(Manifest.permission.READ_MEDIA_VIDEO)
-                ) {
-                    MediaAccessLevel.FULL_VISUAL
-                } else {
-                    MediaAccessLevel.NONE
+                val hasImages = context.isGranted(Manifest.permission.READ_MEDIA_IMAGES)
+                val hasVideo = context.isGranted(Manifest.permission.READ_MEDIA_VIDEO)
+                val level = when {
+                    hasImages && hasVideo -> MediaAccessLevel.FULL_VISUAL
+                    hasImages -> MediaAccessLevel.IMAGES_ONLY
+                    hasVideo -> MediaAccessLevel.VIDEOS_ONLY
+                    else -> MediaAccessLevel.NONE
                 }
+                MediaAccessState(
+                    level = level,
+                    canReadImages = hasImages,
+                    canReadVideos = hasVideo,
+                    hasFullVisualAccess = hasImages && hasVideo,
+                    hasPartialVisualAccess = false
+                )
             }
-            context.isGranted(Manifest.permission.READ_EXTERNAL_STORAGE) -> MediaAccessLevel.LEGACY_FULL
-            else -> MediaAccessLevel.NONE
+            context.isGranted(Manifest.permission.READ_EXTERNAL_STORAGE) -> MediaAccessState(
+                level = MediaAccessLevel.LEGACY_FULL,
+                canReadImages = true,
+                canReadVideos = true,
+                hasFullVisualAccess = true,
+                hasPartialVisualAccess = false
+            )
+            else -> MediaAccessState(
+                level = MediaAccessLevel.NONE,
+                canReadImages = false,
+                canReadVideos = false,
+                hasFullVisualAccess = false,
+                hasPartialVisualAccess = false
+            )
         }
     }
 
