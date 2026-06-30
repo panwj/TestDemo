@@ -12,7 +12,7 @@ package com.clean.similarscan.api
  * SHA-256。默认 false，Duplicate 仍按 duplicateReference 归类，SHA-256 只作为可延后补充的
  * 字节级证据。
  * @param videoFingerprintMode 视频指纹模式。默认 BALANCED，在系统缩略图之外补充少量 MMR
- * 帧；Demo 如需对齐竞品扫描结果，应显式使用 COMPETITOR_COMPAT。
+ * 帧；
  */
 data class SimilarScanRequest(
     val forceFull: Boolean = false,
@@ -47,11 +47,9 @@ enum class VideoFingerprintMode {
     ACCURATE,
 
     /**
-     * 竞品兼容模式：不混用系统视频缩略图，按 0..duration 抽取 7 到 13 个
-     * 9x8 视频帧，并使用竞品式“正常至少 2 帧命中、单帧可降到 1 帧”的相似判断。
-     *
-     * SimilarScanDemo 为了对齐竞品结果会显式使用该模式；其他产品默认仍建议
-     * 使用 BALANCED，或按自身速度/准确率目标选择 FAST、ACCURATE。
+     * 加强模式：不混用系统视频缩略图，按 0..duration 抽取 7 到 13 个
+     * 9x8 视频帧，并使用“正常至少 2 帧命中、单帧可降到 1 帧”的相似判断。
+     * 速度会慢但准确度会提高
      */
-    COMPETITOR_COMPAT
+    REFERENCE_COMPAT
 }

@@ -44,7 +44,7 @@ class MediaScanService : Service() {
                     scanClient.scan(
                         request = SimilarScanRequest(
                             forceFull = forceFull,
-                            videoFingerprintMode = VideoFingerprintMode.COMPETITOR_COMPAT
+                            videoFingerprintMode = VideoFingerprintMode.REFERENCE_COMPAT
                         ),
                         observer = SimilarScanObserver { progress ->
                             updateNotification(progress.message, progress.processedCount)

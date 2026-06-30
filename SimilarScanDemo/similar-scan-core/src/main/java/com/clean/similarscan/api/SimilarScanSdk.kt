@@ -5,8 +5,8 @@ import android.content.Context
 /**
  * SDK 创建入口。
  *
- * Demo 当前仍在 app module 内调试效果；后续抽成独立 Android Library 时，接入方只需要
- * 依赖 module 并通过 SimilarScanSdk.create(context) 获取扫描能力。
+ * 接入方通过 SimilarScanSdk.create(context) 获取扫描能力，通过 createImageLoader(context)
+ * 获取与扫描链路一致的媒体预览加载能力。
  */
 object SimilarScanSdk {
     fun create(context: Context): SimilarScanClient {

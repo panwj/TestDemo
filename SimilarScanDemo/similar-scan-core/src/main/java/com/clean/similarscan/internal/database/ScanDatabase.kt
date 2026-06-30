@@ -24,7 +24,7 @@ import java.util.Locale
 /**
  * 产品级扫描必须落库：这样才能支持 10 万资源、断点续扫、增量扫描和结果即时展示。
  *
- * Demo 使用 SQLiteOpenHelper 保持依赖最少；正式项目可平滑替换为 Room。
+ * 本 SDK 使用 SQLiteOpenHelper 保持依赖最少；正式项目可平滑替换为 Room。
  */
 internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     init {
@@ -148,8 +148,8 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     /**
      * 清空所有扫描产物。
      *
-     * 当用户切换 Kotlin/native 哈希实现时必须调用。媒体元数据、指纹和分组相互关联，
-     * 只删除 fingerprint 会留下无法解释的旧分组，因此这里统一事务清理。
+     * 当指纹算法或关键参数变化时必须调用。媒体元数据、指纹和分组相互关联，只删除
+     * fingerprint 会留下无法解释的旧分组，因此这里统一事务清理。
      */
     fun clearScanData() {
         val db = writableDatabase
@@ -391,13 +391,13 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     }
 
     /**
-     * 按竞品 a.a.E()/a.a.v() 的语义重建相似组。
+     * 按锚点直连语义重建相似组。
      *
-     * 竞品先按创建时间升序排序，取当前最早资源作为锚点，只把“与锚点直接相似”的
+     * 图片先按创建时间升序排序，取当前最早资源作为锚点，只把“与锚点直接相似”的
      * 资源放进该组，然后从待处理集合移除整组。它不是相似关系的连通分量，因此
      * A≈B、B≈C 但 A≉C 时，C 不会借助 B 被并入 A 所在组。
      *
-     * 图片使用单组合 Hash；视频为每一帧建立索引，最终使用竞品的跨帧至少两次命中精判。
+     * 图片使用单组合 Hash；视频为每一帧建立索引，最终使用当前规则的跨帧至少两次命中精判。
      */
     fun rebuildSimilarGroups(
         kinds: Set<MediaKind>,
@@ -418,7 +418,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
             supportedKinds.forEach kindLoop@{ kind ->
                 /*
                  * 扫描过程中 processVisual/processVideo 已经把相似候选实时写入
-                 * Similar 分组。最终重建时先把这些候选读成邻接表，再删除旧组并按竞品
+                 * Similar 分组。最终重建时先把这些候选读成邻接表，再删除旧组并按参考规则
                  * “锚点直连”规则重建，可以避免扫描完成后再次为同一批资源跑 BK-Tree。
                  *
                  * 如果是旧数据、异常中断或首次进入时没有可复用候选，则回退到原 BK-Tree
@@ -573,8 +573,8 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
         videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
     ): List<GroupingFingerprint> {
         /*
-         * 竞品的视频专用流程直接使用 MediaStore date_added DESC 的输入顺序作为锚点顺序，
-         * 不像图片路径那样先按拍摄时间升序排序。
+         * 视频专用流程直接使用 MediaStore date_added DESC 的输入顺序作为锚点顺序，
+         * 与图片按拍摄时间升序的路径分开处理。
          */
         val orderBy = if (kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING) {
             "a.date_added DESC"
@@ -826,9 +826,9 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
     }
 
     /**
-     * 按竞品 duplicateReference 规则查找重复候选。
+     * 按参考规则 duplicateReference 规则查找重复候选。
      *
-     * 竞品引用由：媒体类型 + 宽高 + imageHash + 编辑状态 + 文件大小组成。
+     * 参考规则引用由：媒体类型 + 宽高 + imageHash + 编辑状态 + 文件大小组成。
      * 这里直接在 SQL 层完成等值过滤，不再要求 SHA-256 完全一致。
      */
     fun findDuplicateReferenceCandidates(
@@ -970,7 +970,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
          *
          * 这些条件只用于召回，最终仍由多帧 dHash/colorHash 精判决定是否相似。
          */
-        if (videoFingerprintMode == VideoFingerprintMode.COMPETITOR_COMPAT) {
+        if (videoFingerprintMode == VideoFingerprintMode.REFERENCE_COMPAT) {
             return findCompetitorVideoFingerprintCandidates(assetId, asset, videoFingerprintMode)
         }
         val durationBucket = HashBuckets.durationBucket(asset.duration)
@@ -1572,7 +1572,7 @@ internal class ScanDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAM
          * 2. 候选召回和分组重建只使用当前算法版本的 fingerprint，避免旧结果混入。
          * 3. 视频候选先按时长桶、宽高比桶收窄，再进入多帧精判。
          * 4. 新增索引降低 duplicateReference、视频候选召回和分组阶段的 SQL 成本。
-         * 5. 视频指纹模式可配置；Demo 可使用竞品兼容模式抽取 7 到 13 帧。
+         * 5. 视频指纹模式可配置；宿主产品可使用参考帧模式抽取 7 到 13 帧。
          * 6. 图片指纹优先使用 MediaStore.Images.Thumbnails，以复用系统缩略图缓存。
          * 7. 完整清晰度/曝光质量分不再阻塞首次扫描主链路。
          */
@@ -1699,11 +1699,10 @@ object HashBuckets {
     fun sizeBucket(size: Long): Long = size / 1_048_576L
 
     /**
-     * 竞品模型中的 potentiallySimilarIdentifier。
+     * 重复识别使用的稳定组合标识。
      *
-     * 从反编译代码可确认视频使用“宽x高_文件大小”。图片枚举方法反编译不完整，
-     * 但资产模型共用同一字段，因此 Demo 统一使用该稳定格式，避免自行加入时间和
-     * hash 高位后产生与竞品不同的分桶结果。
+     * 这里统一使用“宽x高_文件大小”的稳定格式，避免加入时间、hash 高位等易变字段后
+     * 产生不稳定的分桶结果。
      */
     fun potentialIdentifier(asset: MediaAsset): String {
         return "${asset.width}x${asset.height}_${asset.size}"

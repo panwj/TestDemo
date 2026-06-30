@@ -8,7 +8,7 @@ import com.clean.similarscan.internal.model.ProductCategoryType
 import com.clean.similarscan.internal.model.SimilarGroup
 
 /**
- * 将数据库扫描组转换成与竞品首页一致的固定分类顺序。
+ * 将数据库扫描组转换成与产品首页一致的固定分类顺序。
  */
 object ProductCategoryBuilder {
     fun build(groups: List<SimilarGroup>): List<ProductCategory> {

@@ -45,7 +45,7 @@ com.clean.similarscan.internal.*
 
 ## 2. Gradle 接入
 
-当前 Demo 采用工程内 module 依赖：
+开发期可采用工程内 module 依赖：
 
 ```kotlin
 dependencies {
@@ -193,14 +193,18 @@ val result = client.scan(
 client.scan(SimilarScanRequest(forceFull = true), observer)
 ```
 
+`forceFull = true` 的含义是“强制全量枚举 MediaStore 并做媒体库对账”，不是“强制重算全部指纹”。
+SDK 会继续复用未变化资源的旧 fingerprint。只有新增、内容或关键元数据变化、算法版本变化、
+图片指纹尺寸变化、视频指纹模式变化、旧指纹缺失或上次未完成的资源，才会重新计算图片/视频指纹。
+
 常用参数：
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `forceFull` | `false` | 是否强制全量扫描 |
+| `forceFull` | `false` | 是否强制全量枚举和媒体库对账；不会强制重算全部可复用指纹 |
 | `imageFingerprintSize` | `256` | 图片/截图指纹 Bitmap 最大边，SDK 会限制在 96..512 |
 | `calculateDuplicateSha256DuringScan` | `false` | 是否在扫描主链路中立即补算 Duplicate 候选的 SHA-256 |
-| `videoFingerprintMode` | `BALANCED` | 视频指纹模式：`FAST`、`BALANCED`、`ACCURATE`、`COMPETITOR_COMPAT` |
+| `videoFingerprintMode` | `BALANCED` | 视频指纹模式：`FAST`、`BALANCED`、`ACCURATE`、`REFERENCE_COMPAT` |
 
 视频模式建议：
 
@@ -209,9 +213,9 @@ client.scan(SimilarScanRequest(forceFull = true), observer)
 | `FAST` | 速度优先、视频量大、可接受封面相似风险 | 系统缩略图单帧优先，失败时少量 MMR 帧 |
 | `BALANCED` | 默认推荐 | 系统缩略图 + 多个 MMR 时间点，避免完全单帧化 |
 | `ACCURATE` | 准确率优先、视频量可控 | 更多 MMR 时间点，不把系统缩略图作为唯一依据 |
-| `COMPETITOR_COMPAT` | Demo 对齐竞品结果 | 不使用系统缩略图，按竞品 7 到 13 帧规则抽帧，候选召回更宽，正常至少 2 帧命中 |
+| `REFERENCE_COMPAT` | 参考帧加强模式 | 不使用系统缩略图，按 7 到 13 帧规则抽帧，候选召回更宽，正常至少 2 帧命中 |
 
-Demo 当前为了与竞品扫描结果对齐，前台扫描服务显式传入 `VideoFingerprintMode.COMPETITOR_COMPAT`。其他产品不需要对齐竞品时建议保留默认 `BALANCED`，或按自身业务选择 `FAST` / `ACCURATE`。
+需要更高视频召回时，宿主产品可以显式传入 `VideoFingerprintMode.REFERENCE_COMPAT`；常规场景建议保留默认 `BALANCED`，或按自身业务选择 `FAST` / `ACCURATE`。
 
 扫描阶段：
 
@@ -235,7 +239,7 @@ FAILED
 -> UI 节流读取 client.loadProductCategories()
 ```
 
-Demo 中使用前台 Service + 包内广播，其他产品可以替换为自己的任务体系。
+宿主应用可以使用前台 Service、WorkManager 或自有任务体系承载扫描。
 
 ## 7. 扫描频率建议
 
@@ -397,7 +401,7 @@ App 冷启动时，如果上次删除确认期间进程被杀，可以执行：
 client.recoverStaleDeletePending()
 ```
 
-建议宿主持久化本次删除操作状态，确认回调结束后清理。Demo 中这部分由 `DeleteOperationStore` 完成。
+建议宿主持久化本次删除操作状态，确认回调结束后清理。宿主应用可用自有持久化组件完成这部分状态管理。
 
 ## 11. 前台服务参考结构
 
@@ -438,12 +442,12 @@ class MediaScanService : Service() {
 }
 ```
 
-如果宿主就是 SimilarScanDemo，并且目标是复现竞品扫描口径，可以改为：
+如果宿主需要更高视频召回，可以改为：
 
 ```kotlin
 SimilarScanRequest(
     forceFull = forceFull,
-    videoFingerprintMode = VideoFingerprintMode.COMPETITOR_COMPAT
+    videoFingerprintMode = VideoFingerprintMode.REFERENCE_COMPAT
 )
 ```
 
@@ -545,7 +549,7 @@ Duplicate 候选 SHA-256 按需或延后计算
 视频多帧抽帧
 ```
 
-视频路径默认 `BALANCED`，会在系统缩略图之外补充 MMR 时间点；如果切到 `FAST`，识别效果仍会受单帧策略影响。`COMPETITOR_COMPAT` 会提高相似视频召回，但候选范围和帧匹配规则更宽，性能和误合并风险要按产品目标评估。
+视频路径默认 `BALANCED`，会在系统缩略图之外补充 MMR 时间点；如果切到 `FAST`，识别效果仍会受单帧策略影响。`REFERENCE_COMPAT` 会提高相似视频召回，但候选范围和帧匹配规则更宽，性能和误合并风险要按产品目标评估。
 
 ## 15. 多产品接入建议
 
@@ -585,4 +589,4 @@ Duplicate 候选 SHA-256 按需或延后计算
 - 删除前调用 `markDeletePending()`，删除确认后调用 `finalizeDelete()` 或 `restoreDeletePending()`。
 - 生命周期结束时调用 `client.close()`。
 
-完成以上步骤后，宿主产品即可获得与 Demo 当前一致的本地相似媒体扫描能力。
+完成以上步骤后，宿主产品即可获得本地相似媒体扫描能力。

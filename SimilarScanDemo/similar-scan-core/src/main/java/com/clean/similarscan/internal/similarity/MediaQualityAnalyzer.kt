@@ -5,7 +5,7 @@ import com.clean.similarscan.internal.model.MediaAsset
 import kotlin.math.abs
 
 /**
- * 本地媒体质量评分，用于生成竞品式 Best 推荐。
+ * 本地媒体质量评分，用于生成参考式 Best 推荐。
  *
  * 评分综合清晰度、曝光、分辨率、收藏状态和编辑状态。它不上传图片，
  * 只在缩略图上采样计算，避免对大图库产生过高成本。

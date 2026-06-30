@@ -1,7 +1,7 @@
 package com.clean.similarscan.internal.model
 
 /**
- * 与竞品首页一致的媒体清理分类。
+ * 与产品首页一致的媒体清理分类。
  */
 enum class ProductCategoryType(val title: String, val grouped: Boolean) {
     SIMILAR("Similar", true),

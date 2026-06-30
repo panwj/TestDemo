@@ -11,12 +11,12 @@ import java.io.File
 import kotlin.math.abs
 
 /**
- * 按竞品规则提取视频多帧指纹。
+ * 提取视频多帧指纹。
  *
- * 竞品 ExtractionRule 为：最小间隔 2、最大间隔 10、常规 7 帧、最多 13 帧。
+ * REFERENCE_COMPAT 模式使用最小间隔 2 秒、最大间隔 10 秒、常规 7 帧、最多 13 帧。
  *
- * FAST/BALANCED 优先利用系统缩略图降低成本；COMPETITOR_COMPAT 不混入系统
- * 缩略图，按竞品 0..duration 的 7 到 13 帧规则生成指纹。
+ * FAST/BALANCED 优先利用系统缩略图降低成本；REFERENCE_COMPAT 不混入系统
+ * 缩略图，按 0..duration 的 7 到 13 帧规则生成指纹。
  */
 internal class VideoFingerprintCalculator(context: Context) {
     private val appContext = context.applicationContext
@@ -25,7 +25,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         asset: MediaAsset,
         mode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
     ): VideoFingerprint {
-        val shouldLoadSystemThumbnail = mode != VideoFingerprintMode.COMPETITOR_COMPAT
+        val shouldLoadSystemThumbnail = mode != VideoFingerprintMode.REFERENCE_COMPAT
         val thumbnailHash = if (shouldLoadSystemThumbnail) systemVideoThumbnail(asset)?.let { thumbnail ->
             try {
                 HashCalculator.buildHash(thumbnail)
@@ -71,7 +71,7 @@ internal class VideoFingerprintCalculator(context: Context) {
             sampleTimesMs.forEach { timeMs ->
                 val frame = extractFrame(retriever, (timeMs * MICROSECONDS_PER_MILLISECOND).toLong())
                 if (frame == null) {
-                    // 竞品会保留无效帧对象，不能因单帧失败改变后续最小命中数。
+                    // 参考帧模式会保留无效帧对象，不能因单帧失败改变后续最小命中数。
                     hashes += INVALID_HASH
                 } else {
                     try {
@@ -148,7 +148,7 @@ internal class VideoFingerprintCalculator(context: Context) {
     }
 
     /**
-     * 复现竞品传入真实文件路径的方式；无法读取 DATA 时直接生成无效指纹。
+     * 复现参考规则传入真实文件路径的方式；无法读取 DATA 时直接生成无效指纹。
      */
     @Suppress("DEPRECATION")
     private fun mediaPath(asset: MediaAsset): String? {
@@ -200,29 +200,29 @@ internal class VideoFingerprintCalculator(context: Context) {
             VideoFingerprintMode.FAST -> FAST_FALLBACK_POSITIONS
             VideoFingerprintMode.BALANCED -> BALANCED_POSITIONS
             VideoFingerprintMode.ACCURATE -> ACCURATE_POSITIONS
-            VideoFingerprintMode.COMPETITOR_COMPAT -> return buildCompetitorSampleTimes(durationMs)
+            VideoFingerprintMode.REFERENCE_COMPAT -> return buildReferenceSampleTimes(durationMs)
         }
         return positions.map { durationMs * it }.distinct()
     }
 
-    private fun buildCompetitorSampleTimes(durationMs: Double): List<Double> {
+    private fun buildReferenceSampleTimes(durationMs: Double): List<Double> {
         val duration = durationMs.toLong().coerceAtLeast(0L)
         if (duration <= 0L) return listOf(0.0)
-        val sevenFrameInterval = duration.toDouble() / (COMPETITOR_FRAME_COUNT - 1).toDouble()
+        val sevenFrameInterval = duration.toDouble() / (REFERENCE_FRAME_COUNT - 1).toDouble()
         val times = when {
-            sevenFrameInterval in COMPETITOR_MIN_INTERVAL_MS..COMPETITOR_MAX_INTERVAL_MS -> {
-                buildEvenlySpacedTimes(duration, COMPETITOR_FRAME_COUNT)
+            sevenFrameInterval in REFERENCE_MIN_INTERVAL_MS..REFERENCE_MAX_INTERVAL_MS -> {
+                buildEvenlySpacedTimes(duration, REFERENCE_FRAME_COUNT)
             }
-            sevenFrameInterval < COMPETITOR_MIN_INTERVAL_MS -> {
-                buildIntervalTimes(duration, COMPETITOR_MIN_INTERVAL_MS.toLong())
+            sevenFrameInterval < REFERENCE_MIN_INTERVAL_MS -> {
+                buildIntervalTimes(duration, REFERENCE_MIN_INTERVAL_MS.toLong())
             }
             else -> {
-                buildIntervalTimes(duration, COMPETITOR_MAX_INTERVAL_MS.toLong())
+                buildIntervalTimes(duration, REFERENCE_MAX_INTERVAL_MS.toLong())
                     .let { times ->
-                        if (times.size <= COMPETITOR_MAX_FRAME_COUNT) {
+                        if (times.size <= REFERENCE_MAX_FRAME_COUNT) {
                             times
                         } else {
-                            buildEvenlySpacedTimes(duration, COMPETITOR_MAX_FRAME_COUNT)
+                            buildEvenlySpacedTimes(duration, REFERENCE_MAX_FRAME_COUNT)
                         }
                     }
             }
@@ -256,7 +256,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         return when {
             Build.VERSION.SDK_INT >= 30 -> {
                 /*
-                 * API 30+ 与竞品完全相同：指定 ARGB_8888，并由系统直接输出 9x8 帧。
+                 * API 30+ 与参考规则完全相同：指定 ARGB_8888，并由系统直接输出 9x8 帧。
                  */
                 val params = MediaMetadataRetriever.BitmapParams().apply {
                     preferredConfig = Bitmap.Config.ARGB_8888
@@ -285,7 +285,7 @@ internal class VideoFingerprintCalculator(context: Context) {
 
             else -> {
                 /*
-                 * API 23-26 只能先获取关键帧，再缩放到竞品使用的 9x8 输入尺寸。
+                 * API 23-26 只能先获取关键帧，再缩放到参考规则使用的 9x8 输入尺寸。
                  */
                 retriever.getFrameAtTime(
                     timeUs,
@@ -345,7 +345,7 @@ internal class VideoFingerprintCalculator(context: Context) {
             validFrameCount
         }
         return when {
-            mode == VideoFingerprintMode.COMPETITOR_COMPAT -> VideoFingerprintSource.COMPETITOR_FRAMES
+            mode == VideoFingerprintMode.REFERENCE_COMPAT -> VideoFingerprintSource.REFERENCE_FRAMES
             hasSystemThumbnail && validMmrFrameCount == 0 -> VideoFingerprintSource.SYSTEM_THUMBNAIL
             hasSystemThumbnail && mode == VideoFingerprintMode.BALANCED -> VideoFingerprintSource.HYBRID_THUMBNAIL_AND_FRAMES
             else -> VideoFingerprintSource.MMR_FRAMES
@@ -353,7 +353,7 @@ internal class VideoFingerprintCalculator(context: Context) {
     }
 
     private fun VideoFingerprintMode.shouldFilterLowInformationFrames(): Boolean {
-        return this != VideoFingerprintMode.COMPETITOR_COMPAT
+        return this != VideoFingerprintMode.REFERENCE_COMPAT
     }
 
     private fun invalidFingerprint() = VideoFingerprint(
@@ -368,10 +368,10 @@ internal class VideoFingerprintCalculator(context: Context) {
         const val HASH_HEIGHT = 8
         const val LOW_INFORMATION_LUMA_RANGE = 8
         const val LOW_INFORMATION_EDGE_AVERAGE = 2.0
-        const val COMPETITOR_FRAME_COUNT = 7
-        const val COMPETITOR_MAX_FRAME_COUNT = 13
-        const val COMPETITOR_MIN_INTERVAL_MS = 2_000.0
-        const val COMPETITOR_MAX_INTERVAL_MS = 10_000.0
+        const val REFERENCE_FRAME_COUNT = 7
+        const val REFERENCE_MAX_FRAME_COUNT = 13
+        const val REFERENCE_MIN_INTERVAL_MS = 2_000.0
+        const val REFERENCE_MAX_INTERVAL_MS = 10_000.0
         val FAST_FALLBACK_POSITIONS = listOf(0.10, 0.50, 0.90)
         val BALANCED_POSITIONS = listOf(0.12, 0.38, 0.64, 0.88)
         val ACCURATE_POSITIONS = listOf(0.08, 0.22, 0.36, 0.50, 0.64, 0.78, 0.92)

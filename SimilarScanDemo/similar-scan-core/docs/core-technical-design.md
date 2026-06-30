@@ -1,6 +1,6 @@
 # Similar Scan Core 核心技术方案
 
-本文描述 `similar-scan-core` 当前源码中的核心扫描、指纹、候选召回、相似比较、视频识别和分组逻辑。本文以源码为准，面向后续作为 SDK 接入其他产品时的技术评审和实现对齐。
+本文描述 `similar-scan-core` 当前源码中的核心扫描、指纹、候选召回、相似比较、视频识别和分组逻辑。本文以源码为准，面向后续作为 SDK 接入其他产品时的技术评审和实现说明。
 
 ## 1. 能力边界
 
@@ -155,6 +155,14 @@ facebook
 
 扫描模式由 `SimilarMediaScanner` 和 `ScanStateStore` 决定。
 
+重要语义：
+
+- `forceFull = true` 表示强制全量枚举和媒体库对账，不表示强制重算全部指纹。
+- 全量扫描会从 MediaStore 重新读取所有当前可访问的图片、视频资源。
+- 每个资源都会执行 `media_asset` upsert，并刷新 `last_seen_scan`、基础元数据和扫描 token。
+- 如果旧指纹仍可复用，本轮会跳过 Bitmap 解码、dHash/colorHash、质量分计算和视频抽帧。
+- 只有新增资源、内容或关键元数据变化、算法版本变化、指纹尺寸变化、视频模式变化、旧指纹缺失或上次未完成的资源，才会重新计算指纹。
+
 触发全量扫描的条件：
 
 - 调用方设置 `SimilarScanRequest(forceFull = true)`。
@@ -182,6 +190,24 @@ isEdited
 ```
 
 如果数据库已有 fingerprint，且 `source_signature` 与当前一致，且 `fingerprint_algorithm_version` 与当前版本一致，则本轮复用旧指纹，不重新加载 Bitmap、不重新抽帧。
+
+因此首次扫描和后续 `forceFull = true` 的耗时表现不同：
+
+```text
+首次扫描：
+MediaStore 全量枚举
+-> 所有资源首次入库
+-> 所有资源计算图片/视频指纹
+
+后续 forceFull 扫描：
+MediaStore 全量枚举
+-> 所有资源对账和刷新 last_seen_scan
+-> 未变化资源复用旧 fingerprint
+-> 只对新增、变化、算法版本不一致或旧指纹缺失的资源重算
+```
+
+这类扫描更准确地称为“全量校验媒体库集合 + 增量重算指纹”。它既能发现系统相册中已经删除的资源，
+也能避免每次全量扫描都重新读取 9k/10w 张缩略图。
 
 注意：文件名、bucket、path_hint 不进入 `SourceSignature`。这些字段只影响展示和分类，不应该触发 dHash/colorHash 或视频帧指纹重算。
 
@@ -449,7 +475,7 @@ dHash 完全相同
 候选资源 content_sha256
 ```
 
-SHA-256 不是进入 Duplicate 的硬条件，而是字节级验证证据，用来区分“字节完全一致”和“竞品组合引用一致”。当前默认 `calculateDuplicateSha256DuringScan = false`，不会在扫描主链路中读全文件；接入方如需扫描时立即补证据，可以在 `SimilarScanRequest` 中开启。
+SHA-256 不是进入 Duplicate 的硬条件，而是字节级验证证据，用来区分“字节完全一致”和“组合引用一致”。当前默认 `calculateDuplicateSha256DuringScan = false`，不会在扫描主链路中读全文件；接入方如需扫描时立即补证据，可以在 `SimilarScanRequest` 中开启。
 
 Duplicate 优先级高于 Similar：
 
@@ -495,10 +521,10 @@ findDuplicateReferenceCandidates()
 FAST              -> 系统缩略图单帧优先，失败时 MMR 3 个时间点
 BALANCED          -> 系统缩略图 + MMR 4 个时间点，SDK 默认策略
 ACCURATE          -> MMR 7 个时间点，不把系统缩略图作为唯一依据
-COMPETITOR_COMPAT -> 竞品兼容：不使用系统缩略图，按 0..duration 抽取 7 到 13 帧
+REFERENCE_COMPAT -> 参考帧：不使用系统缩略图，按 0..duration 抽取 7 到 13 帧
 ```
 
-SDK 对其他产品的默认值仍是 `BALANCED`，因为它在速度、召回和误合并之间更稳。Demo 为了与竞品扫描结果对齐，在 `MediaScanService` 中显式传入 `VideoFingerprintMode.COMPETITOR_COMPAT`。
+SDK 对其他产品的默认值仍是 `BALANCED`，因为它在速度、召回和误合并之间更稳。宿主产品如需更高视频召回，可显式传入 `VideoFingerprintMode.REFERENCE_COMPAT`。
 
 ### 13.1 系统缩略图路径
 
@@ -533,7 +559,7 @@ VideoFingerprint(
 
 `BALANCED` 模式不会只依赖单帧缩略图，而是把系统缩略图作为第一帧，再补充 MMR 时间点。这样比纯 MMR 快，同时避免视频结果完全退化为封面相似。
 
-`COMPETITOR_COMPAT` 不读取系统视频缩略图，避免“单帧封面”和“多帧相似”混用同一语义。
+`REFERENCE_COMPAT` 不读取系统视频缩略图，避免“单帧封面”和“多帧相似”混用同一语义。
 
 ### 13.2 MMR 抽帧路径
 
@@ -563,7 +589,7 @@ BALANCED:      [12%, 38%, 64%, 88%]
 ACCURATE:      [8%, 22%, 36%, 50%, 64%, 78%, 92%]
 ```
 
-竞品兼容模式按反编译证据中的 `ExtractionRule(minInterval=2.0, maxInterval=10.0, frameCount=7, maxFrameCount=13)` 生成时间点：
+REFERENCE_COMPAT 模式按 `ExtractionRule(minInterval=2.0, maxInterval=10.0, frameCount=7, maxFrameCount=13)` 生成时间点：
 
 ```text
 duration <= 0 -> [0]
@@ -572,7 +598,7 @@ duration <= 0 -> [0]
 7 帧等距间隔大于 10s -> 每 10s 抽一帧；如果超过 13 帧，则改为 0..duration 等距 13 帧
 ```
 
-该规则与竞品反编译出的 `uh/b.java` 时间点生成一致：等距函数包含 0 和 duration，固定间隔函数从 0 开始并补上 duration。
+该规则的时间点生成方式为：等距函数包含 0 和 duration，固定间隔函数从 0 开始并补上 duration。
 
 抽帧 API 分支：
 
@@ -590,7 +616,7 @@ CombinedHash(-1L, emptyArray())
 
 普通模式会过滤低信息帧。判断基于 9x8 帧的亮度范围和平均相邻边缘差，纯黑、纯白、纯色或信息量极低的帧不会参与相似比较。比较时会跳过无效帧，但无效帧不会从列表中删除。
 
-`COMPETITOR_COMPAT` 不做低信息帧过滤，保持与竞品“抽到什么就进入帧序列”的口径一致，避免 Demo 因过滤黑屏/静态帧导致相似视频数量低于竞品。
+`REFERENCE_COMPAT` 不做低信息帧过滤，抽到的帧会原样进入帧序列，避免过滤黑屏/静态帧后改变帧位置和最小命中数。
 
 ## 14. 视频候选召回
 
@@ -628,7 +654,7 @@ aspectTolerance = 8
 
 候选召回只做粗筛。扫描器还会先执行帧级 dHash 汉明距离预筛：如果两段视频没有任意有效帧对落在当前媒体类型的最大候选距离内，就不会进入完整多帧精判。这个预筛不会改变最终阈值口径，最终仍由 `VideoFingerprint.isSimilarTo()` 决定。
 
-`COMPETITOR_COMPAT` 为了对齐竞品相似视频召回，不使用时长桶和宽高比桶过滤，只限定：
+`REFERENCE_COMPAT` 为了提高相似视频召回，不使用时长桶和宽高比桶过滤，只限定：
 
 ```sql
 WHERE a.type = ?
@@ -639,7 +665,7 @@ WHERE a.type = ?
 ORDER BY a.date_added DESC
 ```
 
-也就是说竞品兼容模式采用“同类型、同算法版本宽召回 + 帧级预筛 + 多帧精判”。这会比普通模式召回更多候选，适合 Demo 对齐竞品结果；其他产品如果更看重性能和误召回控制，应继续使用 `BALANCED` 或 `ACCURATE`。
+也就是说参考帧模式采用“同类型、同算法版本宽召回 + 帧级预筛 + 多帧精判”。这会比普通模式召回更多候选，适合召回优先场景；其他产品如果更看重性能和误召回控制，应继续使用 `BALANCED` 或 `ACCURATE`。
 
 ## 15. 视频/录屏相似判断
 
@@ -662,12 +688,12 @@ ORDER BY a.date_added DESC
 SYSTEM_THUMBNAIL
 HYBRID_THUMBNAIL_AND_FRAMES
 MMR_FRAMES
-COMPETITOR_FRAMES
+REFERENCE_FRAMES
 ```
 
 只有双方都是 `SYSTEM_THUMBNAIL` 且都只有一个有效帧时，才允许单帧相似直接判定视频相似。只要任一侧是混合帧或 MMR 多帧，就进入多帧匹配规则，避免单帧封面结果与多帧结果混用同一语义。
 
-`COMPETITOR_FRAMES` 有独立语义：双方都来自竞品兼容模式时，使用竞品式帧命中规则，不套用 Demo 普通多帧模式的“候选帧只能消费一次”和“命中位置间隔”约束。
+`REFERENCE_FRAMES` 有独立语义：双方都来自参考帧模式时，使用参考帧命中规则，不套用普通多帧模式的“候选帧只能消费一次”和“命中位置间隔”约束。
 
 ### 15.2 多帧比较
 
@@ -696,9 +722,9 @@ MIN_MATCHED_FRAME_GAP = 2
 - 防止只靠开头连续两帧相似就把整段视频合并。
 - 降低录屏、静态 UI、重复转场导致的大组误合并。
 
-### 15.3 竞品兼容帧比较
+### 15.3 参考帧比较
 
-当双方 `source` 都是 `COMPETITOR_FRAMES`：
+当双方 `source` 都是 `REFERENCE_FRAMES`：
 
 ```text
 requiredMatches = max(1, min(2, validFrameCountA, validFrameCountB))
@@ -708,7 +734,7 @@ requiredMatches = max(1, min(2, validFrameCountA, validFrameCountB))
 -> 命中数达到 requiredMatches 即判定相似
 ```
 
-这与竞品 smali 中的视频阈值口径一致：正常至少 2 帧命中；当任一侧只有 1 个有效帧时降为 1 帧命中。该模式不要求候选帧唯一消费，也不要求命中帧位置间隔，因此召回会强于 Demo 普通多帧模式，误合并控制则弱一些。
+该模式的视频阈值口径为：正常至少 2 帧命中；当任一侧只有 1 个有效帧时降为 1 帧命中。该模式不要求候选帧唯一消费，也不要求命中帧位置间隔，因此召回会强于普通多帧模式，误合并控制则弱一些。
 
 ## 16. Similar 分组重建
 
@@ -895,7 +921,7 @@ createdAt
 ## 20. 当前风险点
 
 - 视频 `FAST` 模式仍可能退化为系统缩略图单帧，适合速度优先场景；默认 `BALANCED` 已补充 MMR 时间点。
-- `COMPETITOR_COMPAT` 更接近竞品，会提高相似视频召回，但候选范围更宽、多帧比较更宽松，适合 Demo 对齐竞品，不建议作为所有产品的默认模式。
+- `REFERENCE_COMPAT` 会提高相似视频召回，但候选范围更宽、多帧比较更宽松，适合召回优先场景，不建议作为所有产品的默认模式。
 - 图片和视频指纹计算并发后，metrics 中工作线程耗时是累加值，不等同于墙钟时间；对比性能时优先看 `scan=... elapsed=...`。
 - 图片指纹输入默认是最大边 256 的缩略图，不是原图。接入方调小 `imageFingerprintSize` 会提升速度但可能影响细节召回；调大则需要接受更高解码和像素遍历成本。
 - 截图关键词 `startsWith("screen_")` 较宽，可能误归类部分非截图图片。

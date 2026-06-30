@@ -12,10 +12,10 @@ import com.clean.similarscan.internal.scanner.SimilarMediaScanner
 import com.clean.similarscan.internal.similarity.VideoFingerprintMode as InternalVideoFingerprintMode
 
 /**
- * 基于当前 Demo 实现的 SDK 适配器。
+ * Android 平台默认 SDK 适配器。
  *
- * 该类是 UI/Service 与核心扫描实现之间的隔离层：页面只依赖 SimilarScanClient，
- * 后续把 scanner/database/similarity 迁到独立 module 时，UI 层不需要继续跟随改动。
+ * 该类隔离对外 API 与内部 scanner/database/similarity 实现，宿主应用只依赖
+ * SimilarScanClient，不直接访问内部包。
  */
 internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
     private val appContext = context.applicationContext

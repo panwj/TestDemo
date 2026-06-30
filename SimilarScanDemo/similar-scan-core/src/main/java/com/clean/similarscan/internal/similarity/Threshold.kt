@@ -5,8 +5,7 @@ import com.clean.similarscan.internal.model.MediaKind
 /**
  * 分媒体类型阈值。
  *
- * 图片沿用竞品 qh.a 参数；截图、普通视频和录屏当前统一使用严格参数，
- * 这是为降低视频/录屏大组误合并后的最新 Demo 口径。
+ * 图片使用宽松阈值；截图、普通视频和录屏统一使用严格参数，以降低视频/录屏大组误合并。
  *
  * directImageDistance 表示 dHash 汉明距离足够小时直接判相似；
  * colorRanges 表示 dHash 处于中间区间时，再用 colorHash 过滤误判。
@@ -18,7 +17,7 @@ data class Threshold(
 ) {
     companion object {
         /**
-         * 竞品 qh.a：普通照片使用的阈值。
+         * 普通照片使用的阈值。
          */
         private val photoThreshold = Threshold(
             directImageDistance = 0L..4L,
@@ -32,8 +31,8 @@ data class Threshold(
         /**
          * 严格视频阈值。
          *
-         * 反编译代码中这组数值来自 qh.b：dHash 直接命中只允许 0..2，
-         * 中间距离再用更小的 colorHash 距离过滤，适合画面结构重复度较高的截图/录屏类内容。
+         * dHash 直接命中只允许 0..2，中间距离再用更小的 colorHash 距离过滤，
+         * 适合画面结构重复度较高的截图/录屏类内容。
          */
         private val strictVideoLikeThreshold = Threshold(
             directImageDistance = 0L..2L,

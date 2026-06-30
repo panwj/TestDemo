@@ -18,7 +18,7 @@ import kotlin.math.max
 /**
  * 缩略图加载器。
  *
- * 与竞品一致：优先用系统 thumbnail；失败时再走 input stream，并用 inSampleSize 控制解码尺寸。
+ * 与参考规则一致：优先用系统 thumbnail；失败时再走 input stream，并用 inSampleSize 控制解码尺寸。
  */
 class MediaBitmapLoader(private val resolver: ContentResolver) {
     /**
@@ -68,7 +68,7 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
         }
 
         /*
-         * 对齐竞品最后一层 fallback：ContentResolver 解码失败后，继续尝试 DATA
+         * 采用参考规则最后一层 fallback：ContentResolver 解码失败后，继续尝试 DATA
          * 真实路径。部分厂商 MediaProvider 或本地迁移资源只能通过文件路径读取。
          */
         val path = pathFromUri(asset.uri) ?: return null
@@ -131,7 +131,7 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
     }
 
     /**
-     * 使用首个同步关键帧作为视频封面，对齐系统相册在多数录屏上的展示效果。
+     * 使用首个同步关键帧作为视频封面，尽量贴近系统相册在多数录屏上的展示效果。
      */
     private fun extractVideoFrameAtStart(asset: MediaAsset): Bitmap? {
         val retriever = MediaMetadataRetriever()

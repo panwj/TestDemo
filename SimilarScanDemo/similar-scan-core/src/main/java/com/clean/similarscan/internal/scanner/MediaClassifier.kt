@@ -3,11 +3,10 @@ package com.clean.similarscan.internal.scanner
 import java.util.Locale
 
 /**
- * 按竞品规则使用 DISPLAY_NAME 做截图和录屏二次分类。
+ * 使用 DISPLAY_NAME 做截图和录屏二次分类。
  *
  * MediaStore 只提供 IMAGE/VIDEO 等基础媒体类型，并没有“截图”和“录屏”字段。
- * 竞品 qh.k.b()/c() 只把 `_display_name` 传给分类规则，不会把 bucket 或
- * relative_path 拼进去；Demo 也保持相同输入，避免目录名造成额外误分类。
+ * 分类规则只读取 `_display_name`，不拼接 bucket 或 relative_path，避免目录名造成额外误分类。
  */
 object MediaClassifier {
     fun looksLikeScreenshot(displayName: String): Boolean {
@@ -19,9 +18,7 @@ object MediaClassifier {
             text.startsWith("screen_")
     }
 
-    /**
-     * 与竞品 android.support.v4.media.session.a.J(String) 保持同一关键词集合。
-     */
+    /** 录屏关键词集合。 */
     fun looksLikeScreenRecording(displayName: String): Boolean {
         val text = displayName.lowercase(Locale.ROOT)
         return text.contains("screen_recording") ||

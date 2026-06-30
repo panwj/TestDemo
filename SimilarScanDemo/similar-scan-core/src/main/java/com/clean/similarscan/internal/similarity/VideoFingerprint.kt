@@ -5,7 +5,7 @@ import com.clean.similarscan.internal.model.MediaKind
 /**
  * 视频视觉指纹。
  *
- * 竞品会按视频时长抽取 7～13 个归一化时间位置的帧。
+ * 参考帧模式会按视频时长抽取 7～13 个归一化时间位置的帧。
  * 抽帧失败也会保留无效占位，因此这里只要求帧列表非空；无效帧在比较时跳过。
  */
 data class VideoFingerprint(
@@ -22,10 +22,10 @@ data class VideoFingerprint(
     fun isSimilarTo(other: VideoFingerprint, kind: MediaKind): Boolean {
         if (!isValid() || !other.isValid()) return false
 
-        if (source == VideoFingerprintSource.COMPETITOR_FRAMES &&
-            other.source == VideoFingerprintSource.COMPETITOR_FRAMES
+        if (source == VideoFingerprintSource.REFERENCE_FRAMES &&
+            other.source == VideoFingerprintSource.REFERENCE_FRAMES
         ) {
-            return isCompetitorCompatibleSimilar(frames, other.frames, kind)
+            return isReferenceCompatibleSimilar(frames, other.frames, kind)
         }
         val validFrames = frames.filter(CombinedHash::isValid)
         val validOtherFrames = other.frames.filter(CombinedHash::isValid)
@@ -37,8 +37,8 @@ data class VideoFingerprint(
         }
 
         /*
-         * 竞品使用多帧匹配：遍历抽出的帧组合，只要有足够多的帧相似即判定视频相似。
-         * Demo 在保持“至少两帧命中”的口径上增加两个工程约束：
+         * 参考规则使用多帧匹配：遍历抽出的帧组合，只要有足够多的帧相似即判定视频相似。
+         * 当前实现以“至少两帧命中”的口径上增加两个工程约束：
          *
          * 1. 每个候选帧只能被消费一次，避免 A 的多个静态帧都命中 B 的同一张黑屏/片头；
          * 2. 命中的帧位置需要有一定间隔，避免只靠开头连续两帧相似就把整段视频合并。
@@ -64,7 +64,7 @@ data class VideoFingerprint(
         return false
     }
 
-    private fun isCompetitorCompatibleSimilar(
+    private fun isReferenceCompatibleSimilar(
         firstFrames: List<CombinedHash>,
         secondFrames: List<CombinedHash>,
         kind: MediaKind
@@ -76,7 +76,7 @@ data class VideoFingerprint(
         val comparableFrameCount = minOf(validFirstFrames.size, validSecondFrames.size)
         if (comparableFrameCount == 0) return false
 
-        val rule = CompetitorMatchRule.forKind(kind, comparableFrameCount)
+        val rule = ReferenceMatchRule.forKind(kind, comparableFrameCount)
         val possibleMatches = buildList {
             validFirstFrames.forEach { first ->
                 validSecondFrames.forEach { second ->
@@ -100,7 +100,7 @@ data class VideoFingerprint(
         if (possibleMatches.isEmpty()) return false
 
         /*
-         * 竞品兼容模式仍然沿用 7～13 帧抽样，但不能只做“任意两帧命中”。
+         * 参考帧模式仍然沿用 7～13 帧抽样，但不能只做“任意两帧命中”。
          * 真实录屏/视频里经常存在相似片头、黑屏、加载页或静态页面，如果允许同一候选帧
          * 被多次消费，或者命中都集中在开头几帧，就会把本应拆开的资源合成一个大组。
          *
@@ -125,9 +125,9 @@ data class VideoFingerprint(
             matchedFirstIndexes += match.firstIndex
             matchedSecondIndexes += match.secondIndex
 
-            if (matchesCompetitorRule(matchedFirstIndexes, matchedSecondIndexes, rule)) return true
+            if (matchesReferenceRule(matchedFirstIndexes, matchedSecondIndexes, rule)) return true
         }
-        return matchesCompetitorRule(matchedFirstIndexes, matchedSecondIndexes, rule)
+        return matchesReferenceRule(matchedFirstIndexes, matchedSecondIndexes, rule)
     }
 
     private fun hasEnoughSeparatedMatches(indexes: List<Int>): Boolean {
@@ -136,10 +136,10 @@ data class VideoFingerprint(
         return indexes.any { kotlin.math.abs(it - first) >= MIN_MATCHED_FRAME_GAP }
     }
 
-    private fun matchesCompetitorRule(
+    private fun matchesReferenceRule(
         firstIndexes: List<Int>,
         secondIndexes: List<Int>,
-        rule: CompetitorMatchRule
+        rule: ReferenceMatchRule
     ): Boolean {
         if (firstIndexes.size < rule.requiredMatches) return false
         if (rule.requiredSpan <= 0) return true
@@ -164,17 +164,17 @@ data class VideoFingerprint(
         val colorDistance: Long
     )
 
-    private data class CompetitorMatchRule(
+    private data class ReferenceMatchRule(
         val requiredMatches: Int,
         val requiredSpan: Int
     ) {
         companion object {
-            fun forKind(kind: MediaKind, comparableFrameCount: Int): CompetitorMatchRule {
+            fun forKind(kind: MediaKind, comparableFrameCount: Int): ReferenceMatchRule {
                 if (comparableFrameCount <= 2) {
-                    return CompetitorMatchRule(requiredMatches = 1, requiredSpan = 0)
+                    return ReferenceMatchRule(requiredMatches = 1, requiredSpan = 0)
                 }
                 if (comparableFrameCount <= 5) {
-                    return CompetitorMatchRule(requiredMatches = 2, requiredSpan = 1)
+                    return ReferenceMatchRule(requiredMatches = 2, requiredSpan = 1)
                 }
 
                 val ratioPercent = if (kind == MediaKind.SCREEN_RECORDING) {
@@ -183,7 +183,7 @@ data class VideoFingerprint(
                     VIDEO_MATCH_RATIO_PERCENT
                 }
                 val requiredByRatio = ceilPercent(comparableFrameCount, ratioPercent)
-                return CompetitorMatchRule(
+                return ReferenceMatchRule(
                     requiredMatches = maxOf(MIN_MATCHED_FRAME_COUNT + 1, requiredByRatio),
                     requiredSpan = MIN_MATCHED_FRAME_GAP
                 )
@@ -207,5 +207,5 @@ enum class VideoFingerprintSource {
     SYSTEM_THUMBNAIL,
     HYBRID_THUMBNAIL_AND_FRAMES,
     MMR_FRAMES,
-    COMPETITOR_FRAMES
+    REFERENCE_FRAMES
 }

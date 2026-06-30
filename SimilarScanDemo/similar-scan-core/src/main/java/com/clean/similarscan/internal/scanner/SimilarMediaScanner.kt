@@ -36,7 +36,7 @@ import java.util.UUID
  * 关键点：
  * 1. MediaStore 按批枚举，不一次性持有全部资源。
  * 2. 指纹和相似组落库，支持断点续扫与下次快速展示。
- * 3. 图片使用 BK-Tree 召回候选，完成阶段按竞品锚点规则确定性重建分组。
+ * 3. 图片使用 BK-Tree 召回候选，完成阶段按锚点直连规则确定性重建分组。
  * 4. 每批结束回调 UI，让结果边扫边展示。
  */
 internal class SimilarMediaScanner(context: Context) {
@@ -201,7 +201,7 @@ internal class SimilarMediaScanner(context: Context) {
             metrics.measure("remove_assets_not_seen") { database.removeAssetsNotSeenInScan(scanToken) }
         }
         /*
-         * 扫描过程中先增量写组以便 UI 及时展示；完成阶段再按竞品的“时间排序 +
+         * 扫描过程中先增量写组以便 UI 及时展示；完成阶段再按当前规则的“时间排序 +
          * 锚点直接相似”规则确定性重建本轮涉及类型，避免结果受扫描顺序影响。
          */
         metrics.measure("rebuild_similar_groups") {
@@ -287,9 +287,9 @@ internal class SimilarMediaScanner(context: Context) {
             return
         }
         /*
-         * 竞品的 duplicateReference 由媒体类型、宽高、感知 hash、编辑状态和文件大小组成。
+         * 当前规则的 duplicateReference 由媒体类型、宽高、感知 hash、编辑状态和文件大小组成。
          * SHA-256 继续保留为验证证据，但不再作为进入 Duplicates 的唯一条件，否则经过
-         * 元数据重写、重新保存但视觉内容一致的图片会被 Demo 漏掉。
+         * 元数据重写、重新保存但视觉内容一致的图片会被 该规则漏掉。
          */
         val duplicateReferenceCandidates =
             metrics.measure("find_duplicate_candidates") {
@@ -306,8 +306,8 @@ internal class SimilarMediaScanner(context: Context) {
         if (calculateDuplicateSha256DuringScan) duplicateReferenceCandidates.forEach { candidate ->
             /*
              * 对候选文件补算 SHA-256，数据会缓存到 fingerprint 表。
-             * SHA 不同并不阻止竞品式重复归类，但可在后续诊断页面区分“字节完全相同”
-             * 与“竞品组合引用相同”。
+             * SHA 不同并不阻止参考式重复归类，但可在后续诊断页面区分“字节完全相同”
+             * 与“组合引用相同”。
              */
             if (contentSha256 != null && database.contentShaForAsset(candidate.assetId) == null) {
                 digestCalculator.sha256(candidate.asset.uri)?.also { calculated ->
@@ -407,7 +407,7 @@ internal class SimilarMediaScanner(context: Context) {
         }
         when (fingerprint.source) {
             VideoFingerprintSource.SYSTEM_THUMBNAIL -> metrics.increment("video_system_thumbnail_fingerprint")
-            VideoFingerprintSource.COMPETITOR_FRAMES -> metrics.increment("video_competitor_fingerprint")
+            VideoFingerprintSource.REFERENCE_FRAMES -> metrics.increment("video_reference_fingerprint")
             else -> metrics.increment("video_mmr_fingerprint")
         }
 
@@ -473,7 +473,7 @@ internal class SimilarMediaScanner(context: Context) {
         metrics: ScanMetrics,
         imageFingerprintSize: Int
     ): VisualFingerprintResult? {
-        // 指纹输入走竞品兼容加载；UI 预览仍通过 loadBitmap() 使用真实媒体 URI。
+        // 指纹输入走参考帧加载；UI 预览仍通过 loadBitmap() 使用真实媒体 URI。
         val fingerprintBitmap = metrics.measure("load_fingerprint_bitmap") {
             bitmapLoader.loadFingerprintBitmapWithSource(asset, imageFingerprintSize)
         } ?: return null

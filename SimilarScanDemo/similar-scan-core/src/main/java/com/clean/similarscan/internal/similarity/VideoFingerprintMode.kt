@@ -4,5 +4,5 @@ internal enum class VideoFingerprintMode {
     FAST,
     BALANCED,
     ACCURATE,
-    COMPETITOR_COMPAT
+    REFERENCE_COMPAT
 }

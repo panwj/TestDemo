@@ -8,9 +8,8 @@ import kotlin.math.min
 /**
  * Kotlin dHash 实现。
  *
- * 该实现移植自项目根目录的 DHash.kt，用于替换 Demo 原先依赖
- * Bitmap.createScaledBitmap() 的实现。它直接在原图上对 9x8 网格执行双线性采样，
- * 从而避免 Android Bitmap 缩放器在不同系统版本上的插值差异。
+ * 该实现直接在原图上对 9x8 网格执行双线性采样，避免 Android Bitmap 缩放器在
+ * 不同系统版本上的插值差异。
  */
 object KotlinDHash {
     private const val SAMPLE_COLUMNS = 9
@@ -18,7 +17,7 @@ object KotlinDHash {
     private const val MAX_DIMENSION = 16_384
 
     /**
-     * 返回 64 位 dHash。输入无效时返回 -1L，与竞品 native 的错误值保持一致。
+     * 返回 64 位 dHash。输入无效时返回 -1L，保持无效输入返回值稳定。
      */
     fun fromBitmap(bitmap: Bitmap?): Long {
         if (bitmap == null) return -1L
@@ -44,7 +43,7 @@ object KotlinDHash {
             if (source !== bitmap && !source.isRecycled) {
                 /*
                  * 与根目录 DHash.kt 保持一致：不在算法内部 recycle 临时副本，
-                 * 避免 Bitmap 生命周期处理与参考实现产生差异。
+                 * 避免调用方误判 Bitmap 生命周期。
                  */
             }
         }

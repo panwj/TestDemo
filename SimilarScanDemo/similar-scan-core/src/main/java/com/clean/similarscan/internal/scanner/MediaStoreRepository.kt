@@ -264,7 +264,7 @@ class MediaStoreRepository(context: Context) {
             mimeType = cursor.string(MediaStore.Images.Media.MIME_TYPE),
             isFavorite = Build.VERSION.SDK_INT >= 30 && cursor.int(MediaStore.Images.Media.IS_FAVORITE) == 1,
             /*
-             * 竞品构造 CGAsset 时 duplicateReference 使用的 edited 固定为 false。
+             * 参考规则构造 CGAsset 时 duplicateReference 使用的 edited 固定为 false。
              * generation 只用于增量扫描，不能把“数据库记录更新”解释为“用户编辑”。
              */
             isEdited = false,
