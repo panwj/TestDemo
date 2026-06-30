@@ -2,6 +2,8 @@ package com.example.similarscandemo.permission
 
 import android.app.Activity
 import android.content.Context
+import android.os.Build
+import android.Manifest
 import com.clean.similarscan.permission.SimilarScanPermissionChecker
 import com.clean.similarscan.permission.MediaAccessLevel as SdkMediaAccessLevel
 
@@ -13,6 +15,8 @@ import com.clean.similarscan.permission.MediaAccessLevel as SdkMediaAccessLevel
  */
 object MediaPermissionHelper {
     const val REQUEST_CODE = 1001
+    private const val PREFS_NAME = "media_permission_state"
+    private const val KEY_REQUESTED_MEDIA_PERMISSION = "requested_media_permission"
 
     fun hasPermission(context: Context): Boolean {
         return SimilarScanPermissionChecker.hasPermission(context)
@@ -30,9 +34,52 @@ object MediaPermissionHelper {
     }
 
     fun request(activity: Activity) {
+        markRequested(activity)
         activity.requestPermissions(
             SimilarScanPermissionChecker.requiredPermissions(),
             REQUEST_CODE
         )
+    }
+
+    fun shouldOpenAppSettings(activity: Activity): Boolean {
+        if (hasPermission(activity)) return false
+        if (!hasRequested(activity)) return false
+        val missingPermissions = blockingPermissions().filterNot { permission ->
+            activity.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missingPermissions.isEmpty()) return false
+        /*
+         * shouldShowRequestPermissionRationale=false 有两种情况：
+         * 1. 首次请求前；
+         * 2. 用户勾选“不再提醒”或连续拒绝后系统不再弹窗。
+         *
+         * 这里额外要求 hasRequested=true，排除首次请求前的 false，避免第一次点击扫描
+         * 就跳设置页。
+         */
+        return missingPermissions.all { permission ->
+            !activity.shouldShowRequestPermissionRationale(permission)
+        }
+    }
+
+    private fun markRequested(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_REQUESTED_MEDIA_PERMISSION, true)
+            .apply()
+    }
+
+    private fun hasRequested(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_REQUESTED_MEDIA_PERMISSION, false)
+    }
+
+    private fun blockingPermissions(): Array<String> {
+        return when {
+            Build.VERSION.SDK_INT >= 33 -> arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO
+            )
+            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
     }
 }

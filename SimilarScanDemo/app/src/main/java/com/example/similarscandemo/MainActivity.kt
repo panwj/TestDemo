@@ -7,11 +7,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.database.ContentObserver
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.ListView
@@ -55,6 +57,7 @@ class MainActivity : Activity() {
     private var pendingScanAfterPermission = false
     private var notificationRequestInFlight = false
     private var notificationPermissionHandled = false
+    private var mediaSettingsRequestInFlight = false
     private var scanStartRequestedAt = 0L
     private val mediaChangedScan = Runnable {
         if (!isScanning && MediaPermissionHelper.hasPermission(this)) startScan()
@@ -93,6 +96,7 @@ class MainActivity : Activity() {
         pendingScanAfterPermission = savedInstanceState?.getBoolean(STATE_PENDING_SCAN, false) ?: false
         notificationRequestInFlight = savedInstanceState?.getBoolean(STATE_NOTIFICATION_IN_FLIGHT, false) ?: false
         notificationPermissionHandled = savedInstanceState?.getBoolean(STATE_NOTIFICATION_HANDLED, false) ?: false
+        mediaSettingsRequestInFlight = savedInstanceState?.getBoolean(STATE_MEDIA_SETTINGS_IN_FLIGHT, false) ?: false
         scanClient = SimilarScanSdk.create(applicationContext)
         if (savedInstanceState == null && DeleteOperationStore.shouldRecover(this)) {
             // 全新进入主页时恢复上次进程遗留的删除状态；Activity 重建时不干扰系统确认。
@@ -106,18 +110,17 @@ class MainActivity : Activity() {
         categoryList = findViewById(R.id.categoryList)
 
         showCachedResults()
-        scanButton.setOnClickListener {
-            if (MediaPermissionHelper.hasPermission(this)) continuePermissionFlowAndScan()
-            else MediaPermissionHelper.request(this)
-        }
+        scanButton.setOnClickListener { handleScanButtonClick() }
         if (intent.getBooleanExtra(EXTRA_REQUEST_PERMISSION, false)) {
-            mainHandler.post {
-                if (MediaPermissionHelper.hasPermission(this)) {
-                    continuePermissionFlowAndScan()
-                } else {
-                    MediaPermissionHelper.request(this)
-                }
-            }
+            mainHandler.post { handleScanButtonClick() }
+        }
+    }
+
+    private fun handleScanButtonClick() {
+        when {
+            MediaPermissionHelper.hasPermission(this) -> continuePermissionFlowAndScan()
+            MediaPermissionHelper.shouldOpenAppSettings(this) -> openMediaPermissionSettings()
+            else -> MediaPermissionHelper.request(this)
         }
     }
 
@@ -136,7 +139,12 @@ class MainActivity : Activity() {
             notificationPermissionHandled = true
             startPendingScanIfReady()
         } else {
-            statusText.text = "Photo and video access is required."
+            statusText.text = if (MediaPermissionHelper.shouldOpenAppSettings(this)) {
+                "Media access is blocked. Open app settings to grant photos or videos access."
+            } else {
+                "Photo and video access is required."
+            }
+            updateScanUiFromState()
         }
     }
 
@@ -154,7 +162,15 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::scanClient.isInitialized) {
-            if (pendingScanAfterPermission) {
+            if (mediaSettingsRequestInFlight) {
+                mediaSettingsRequestInFlight = false
+                if (MediaPermissionHelper.hasPermission(this)) {
+                    continuePermissionFlowAndScan()
+                } else {
+                    pendingScanAfterPermission = false
+                    showCachedResults()
+                }
+            } else if (pendingScanAfterPermission) {
                 startPendingScanIfReady()
             } else {
                 showCachedResults()
@@ -176,6 +192,19 @@ class MainActivity : Activity() {
         }
         pendingScanAfterPermission = false
         startScan()
+    }
+
+    private fun openMediaPermissionSettings() {
+        pendingScanAfterPermission = true
+        mediaSettingsRequestInFlight = true
+        updateScanUiFromState()
+        statusText.text = "Grant photos or videos access in system settings, then return to continue scanning."
+        startActivity(
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null)
+            )
+        )
     }
 
     private fun shouldRequestNotificationBeforeScan(): Boolean {
@@ -208,11 +237,13 @@ class MainActivity : Activity() {
             !MediaScanService.isRunning &&
             System.currentTimeMillis() - scanStartRequestedAt < SERVICE_START_GRACE_MS
         isScanning = MediaScanService.isRunning || waitingForServiceStart
-        val preparing = pendingScanAfterPermission || notificationRequestInFlight
+        val preparing = pendingScanAfterPermission || notificationRequestInFlight || mediaSettingsRequestInFlight
         scanButton.isEnabled = !isScanning && !preparing
         scanButton.text = when {
             isScanning -> "Scanning..."
+            mediaSettingsRequestInFlight -> "Waiting for access..."
             preparing -> "Preparing scan..."
+            MediaPermissionHelper.shouldOpenAppSettings(this) -> "Open Settings"
             else -> "Rescan"
         }
         progressBar.visibility = if (isScanning || preparing) View.VISIBLE else View.GONE
@@ -255,6 +286,7 @@ class MainActivity : Activity() {
         outState.putBoolean(STATE_PENDING_SCAN, pendingScanAfterPermission)
         outState.putBoolean(STATE_NOTIFICATION_IN_FLIGHT, notificationRequestInFlight)
         outState.putBoolean(STATE_NOTIFICATION_HANDLED, notificationPermissionHandled)
+        outState.putBoolean(STATE_MEDIA_SETTINGS_IN_FLIGHT, mediaSettingsRequestInFlight)
         super.onSaveInstanceState(outState)
     }
 
@@ -358,5 +390,6 @@ class MainActivity : Activity() {
         private const val STATE_PENDING_SCAN = "state_pending_scan"
         private const val STATE_NOTIFICATION_IN_FLIGHT = "state_notification_in_flight"
         private const val STATE_NOTIFICATION_HANDLED = "state_notification_handled"
+        private const val STATE_MEDIA_SETTINGS_IN_FLIGHT = "state_media_settings_in_flight"
     }
 }
