@@ -192,6 +192,21 @@ com.clean.videocompress.internal.engine.media3.Media3VideoCompressEngine
 - 通过 `Transformer.getProgress()` 定时查询压缩进度。
 - 完成后保存到系统 `MediaStore.Video`。
 
+当前定位：
+
+- 作为产品默认生产方案。
+- 适合优先用于正式业务路径。
+- 三档压缩配置已经能影响目标 bitrate 和输出体积。
+
+后续可继续优化点：
+
+- 根据设备能力动态选择 H.264 profile/level，提升兼容性和画质稳定性。
+- 对超高分辨率视频增加可配置分辨率降档，例如 4K 转 1080p。
+- 增加压缩前空间预估校准，用历史压缩结果修正“预计节省空间”。
+- 对短视频、低码率视频增加“不建议压缩”判断，避免压缩后体积收益很小。
+- 增加后台压缩通知和前台服务，避免长视频压缩被系统中断。
+- 增加压缩结果质量抽检，例如输出文件可播放、时长接近原视频、大小确实降低。
+
 ### 7.2 备用引擎：Native Codec
 
 备用实现类：
@@ -200,17 +215,27 @@ com.clean.videocompress.internal.engine.media3.Media3VideoCompressEngine
 com.clean.videocompress.internal.engine.nativecodec.NativeCodecVideoCompressEngine
 ```
 
-当前代码路径保持独立，便于后续扩展为完整 `MediaCodec + MediaMuxer` 原生转码方案。
+当前代码路径保持独立，用于在需要时切换到原生压缩方案。
 
 当前实现完成：
 
 - 独立任务队列。
-- 原生 `MediaExtractor` / `MediaMuxer` 流程。
+- 原生 `MediaExtractor` / `MediaCodec` / `MediaMuxer` 流程。
+- 视频重新编码为 H.264。
+- 三档压缩映射为目标 bitrate。
+- 关键帧间隔 3 秒。
+- 音频轨透传。
 - 独立进度回调。
 - 独立成功/失败/取消处理。
 - 结果保存到 `MediaStore.Video`。
 
-后续如果要将备用引擎升级为完整原生压缩，只需要在 `nativecodec` 包内补充解码、缩放、编码流程，不影响 Media3 默认引擎。
+与 Media3 默认方案相比，Native Codec 仍需真机重点验证：
+
+- 不同厂商 H.264 编码器的兼容性。
+- 旋转角度、宽高、奇数分辨率处理。
+- 音视频时间戳同步。
+- 长视频压缩过程中的取消和资源释放。
+- 某些 HEVC、HDR、可变帧率视频的处理结果。
 
 ## 8. 结果保存方案
 
