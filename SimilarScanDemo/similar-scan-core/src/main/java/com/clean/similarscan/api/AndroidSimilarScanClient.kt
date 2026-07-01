@@ -30,7 +30,8 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
             forceFull = request.forceFull,
             imageFingerprintSize = request.normalizedImageFingerprintSize,
             calculateDuplicateSha256DuringScan = request.calculateDuplicateSha256DuringScan,
-            videoFingerprintMode = InternalVideoFingerprintMode.valueOf(request.videoFingerprintMode.name)
+            videoFingerprintMode = InternalVideoFingerprintMode.valueOf(request.videoFingerprintMode.name),
+            enableMetricsLog = request.enableMetricsLog
         ) { progress ->
             observer.onProgress(progress.toApi())
         }.toApi()

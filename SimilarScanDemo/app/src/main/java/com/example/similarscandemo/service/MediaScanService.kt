@@ -37,6 +37,7 @@ class MediaScanService : Service() {
         isRunning = true
 
         val forceFull = intent?.getBooleanExtra(EXTRA_FORCE_FULL, false) == true
+        val enableMetricsLog = intent?.getBooleanExtra(EXTRA_ENABLE_METRICS_LOG, true) != false
         executor.execute {
             val scanClient = SimilarScanSdk.create(applicationContext)
             try {
@@ -44,30 +45,42 @@ class MediaScanService : Service() {
                     scanClient.scan(
                         request = SimilarScanRequest(
                             forceFull = forceFull,
-                            videoFingerprintMode = VideoFingerprintMode.REFERENCE_COMPAT
+                            videoFingerprintMode = VideoFingerprintMode.REFERENCE_COMPAT,
+                            enableMetricsLog = enableMetricsLog
                         ),
                         observer = SimilarScanObserver { progress ->
-                            updateNotification(progress.message, progress.processedCount)
+                            updateNotification(progress.message, progress.processedCount, progress.elapsedTimeText)
                             sendProgress(
                                 ACTION_PROGRESS,
                                 progress.processedCount,
                                 progress.discoveredGroupCount,
-                                progress.message
+                                progress.message,
+                                progress.elapsedTimeMs,
+                                progress.elapsedTimeText
                             )
                         }
                     )
                 }.onSuccess { result ->
-                    sendProgress(ACTION_COMPLETE, result.assetCount, result.groups.size, result.message)
+                    sendProgress(
+                        ACTION_COMPLETE,
+                        result.assetCount,
+                        result.groups.size,
+                        result.message,
+                        result.elapsedTimeMs,
+                        result.elapsedTimeText
+                    )
                 }.onFailure { error ->
                     sendProgress(
                         ACTION_FAILED,
                         0,
                         0,
-                        error.message ?: "Media scan failed."
+                        error.message ?: "Media scan failed.",
+                        0L,
+                        ""
                     )
                 }
             } finally {
-                // SDK 内部持有 SQLiteOpenHelper，服务扫描结束必须关闭连接。
+                // SDK 内部持有数据库连接，服务扫描结束必须关闭连接。
                 scanClient.close()
             }
             scanning.set(false)
@@ -95,7 +108,9 @@ class MediaScanService : Service() {
         action: String,
         processedCount: Int,
         groupCount: Int,
-        message: String
+        message: String,
+        elapsedTimeMs: Long,
+        elapsedTimeText: String
     ) {
         sendBroadcast(
             Intent(action)
@@ -103,15 +118,17 @@ class MediaScanService : Service() {
                 .putExtra(EXTRA_PROCESSED_COUNT, processedCount)
                 .putExtra(EXTRA_GROUP_COUNT, groupCount)
                 .putExtra(EXTRA_MESSAGE, message)
+                .putExtra(EXTRA_ELAPSED_TIME_MS, elapsedTimeMs)
+                .putExtra(EXTRA_ELAPSED_TIME_TEXT, elapsedTimeText)
         )
     }
 
-    private fun updateNotification(message: String, processedCount: Int) {
+    private fun updateNotification(message: String, processedCount: Int, elapsedTimeText: String) {
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, notification(message, processedCount))
+            .notify(NOTIFICATION_ID, notification(message, processedCount, elapsedTimeText))
     }
 
-    private fun notification(message: String, processedCount: Int): Notification {
+    private fun notification(message: String, processedCount: Int, elapsedTimeText: String = ""): Notification {
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
@@ -129,10 +146,15 @@ class MediaScanService : Service() {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
+        val contentText = if (elapsedTimeText.isBlank()) {
+            message
+        } else {
+            "$message · $elapsedTimeText elapsed"
+        }
         return builder
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(title)
-            .setContentText(message)
+            .setContentText(contentText)
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
@@ -157,9 +179,12 @@ class MediaScanService : Service() {
         const val ACTION_COMPLETE = "com.example.similarscandemo.SCAN_COMPLETE"
         const val ACTION_FAILED = "com.example.similarscandemo.SCAN_FAILED"
         const val EXTRA_FORCE_FULL = "force_full"
+        const val EXTRA_ENABLE_METRICS_LOG = "enable_metrics_log"
         const val EXTRA_PROCESSED_COUNT = "processed_count"
         const val EXTRA_GROUP_COUNT = "group_count"
         const val EXTRA_MESSAGE = "message"
+        const val EXTRA_ELAPSED_TIME_MS = "elapsed_time_ms"
+        const val EXTRA_ELAPSED_TIME_TEXT = "elapsed_time_text"
         @Volatile
         var isRunning: Boolean = false
             private set

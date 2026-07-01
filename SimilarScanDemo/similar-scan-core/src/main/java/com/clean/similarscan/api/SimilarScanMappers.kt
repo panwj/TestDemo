@@ -103,7 +103,9 @@ internal fun InternalScanProgress.toApi(): ScanProgress {
         stage = stage.toApi(),
         processedCount = processedCount,
         discoveredGroupCount = discoveredGroupCount,
-        message = message
+        message = message,
+        elapsedTimeMs = elapsedTimeMs,
+        elapsedTimeText = elapsedTimeText
     )
 }
 
@@ -111,6 +113,8 @@ internal fun InternalScanResult.toApi(): ScanResult {
     return ScanResult(
         assetCount = assetCount,
         groups = groups.map { it.toApi() },
-        message = message
+        message = message,
+        elapsedTimeMs = elapsedTimeMs,
+        elapsedTimeText = elapsedTimeText
     )
 }

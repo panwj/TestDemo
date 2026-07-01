@@ -3,7 +3,6 @@ package com.clean.similarscan.internal.scanner
 import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
-import android.util.Log
 import com.clean.similarscan.internal.database.ScanDatabase
 import com.clean.similarscan.internal.database.AssetScanToken
 import com.clean.similarscan.internal.model.MediaAsset
@@ -72,6 +71,7 @@ internal class SimilarMediaScanner(context: Context) {
         imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
         calculateDuplicateSha256DuringScan: Boolean = false,
         videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED,
+        enableMetricsLog: Boolean = true,
         progress: (ScanProgress) -> Unit = {}
     ): ScanResult {
         val startedAt = System.currentTimeMillis()
@@ -104,7 +104,15 @@ internal class SimilarMediaScanner(context: Context) {
         )
 
         val modeName = if (fullScan) "full" else "incremental"
-        progress(ScanProgress(ScanStage.ENUMERATING, 0, database.groupCount(), "Starting $modeName MediaStore scan."))
+        progress(
+            scanProgress(
+                stage = ScanStage.ENUMERATING,
+                processedCount = 0,
+                discoveredGroupCount = database.groupCount(),
+                message = "Starting $modeName MediaStore scan.",
+                startedAt = startedAt
+            )
+        )
         metrics.measure("enumerate_and_fingerprint_total") {
             val pendingJobs = FingerprintJobScheduler()
             repository.forEachMediaBatch(
@@ -113,11 +121,12 @@ internal class SimilarMediaScanner(context: Context) {
                 videoGenerationAfter = videoGenerationAfter
             ) { batch ->
                 progress(
-                    ScanProgress(
+                    scanProgress(
                         stage = ScanStage.FINGERPRINTING,
                         processedCount = visited,
                         discoveredGroupCount = database.groupCount(),
-                        message = "Processing batch of ${batch.size} assets."
+                        message = "Processing batch of ${batch.size} assets.",
+                        startedAt = startedAt
                     )
                 )
 
@@ -185,11 +194,12 @@ internal class SimilarMediaScanner(context: Context) {
                 )
 
                 progress(
-                    ScanProgress(
+                    scanProgress(
                         stage = ScanStage.MATCHING,
                         processedCount = visited,
                         discoveredGroupCount = database.groupCount(),
-                        message = "Scanned $visited assets. $fingerprinted updated, $skippedUnchanged reused."
+                        message = "Scanned $visited assets. $fingerprinted updated, $skippedUnchanged reused.",
+                        startedAt = startedAt
                     )
                 )
             }
@@ -223,25 +233,51 @@ internal class SimilarMediaScanner(context: Context) {
         )
         val groups = metrics.measure("load_groups") { database.loadGroups(MAX_GROUPS_TO_SHOW) }
         val elapsed = System.currentTimeMillis() - startedAt
-        metrics.logSummary(
-            modeName = modeName,
-            visited = visited,
-            fingerprinted = fingerprinted,
-            skippedUnchanged = skippedUnchanged,
-            elapsed = elapsed
-        )
+        val elapsedText = ScanElapsedFormatter.format(elapsed)
+        if (enableMetricsLog) {
+            metrics.logSummary(
+                modeName = modeName,
+                visited = visited,
+                fingerprinted = fingerprinted,
+                skippedUnchanged = skippedUnchanged,
+                elapsed = elapsed,
+                elapsedText = elapsedText
+            )
+        }
         progress(
             ScanProgress(
                 stage = ScanStage.COMPLETED,
                 processedCount = visited,
                 discoveredGroupCount = groups.size,
-                message = "Completed $modeName media scan."
+                message = "Completed $modeName media scan.",
+                elapsedTimeMs = elapsed,
+                elapsedTimeText = elapsedText
             )
         )
         return ScanResult(
             assetCount = visited,
             groups = groups,
-            message = "Finished $modeName scan in ${elapsed}ms. Updated $fingerprinted, reused $skippedUnchanged cached fingerprints."
+            message = "Finished $modeName scan in $elapsedText. Updated $fingerprinted, reused $skippedUnchanged cached fingerprints.",
+            elapsedTimeMs = elapsed,
+            elapsedTimeText = elapsedText
+        )
+    }
+
+    private fun scanProgress(
+        stage: ScanStage,
+        processedCount: Int,
+        discoveredGroupCount: Int,
+        message: String,
+        startedAt: Long
+    ): ScanProgress {
+        val elapsed = System.currentTimeMillis() - startedAt
+        return ScanProgress(
+            stage = stage,
+            processedCount = processedCount,
+            discoveredGroupCount = discoveredGroupCount,
+            message = message,
+            elapsedTimeMs = elapsed,
+            elapsedTimeText = ScanElapsedFormatter.format(elapsed)
         )
     }
 
@@ -745,66 +781,5 @@ private class NamedThreadFactory(private val prefix: String) : ThreadFactory {
         return Thread(runnable, "$prefix-${nextId.getAndIncrement()}").apply {
             isDaemon = true
         }
-    }
-}
-
-/**
- * 扫描性能指标收集器。
- *
- * 该对象会被扫描线程和计算线程同时调用，因此内部写入需要同步。工作线程耗时是累加值，
- * 不等同于真实墙钟时间；真实耗时以 logSummary 的 elapsed 为准。
- */
-private class ScanMetrics {
-    private val totals = linkedMapOf<String, Long>()
-    private val counts = linkedMapOf<String, Int>()
-
-    fun <T> measure(name: String, block: () -> T): T {
-        val startedAt = System.nanoTime()
-        return try {
-            block()
-        } finally {
-            add(name, (System.nanoTime() - startedAt) / 1_000_000L)
-        }
-    }
-
-    fun logSummary(
-        modeName: String,
-        visited: Int,
-        fingerprinted: Int,
-        skippedUnchanged: Int,
-        elapsed: Long
-    ) {
-        val totalsSnapshot: Map<String, Long>
-        val countsSnapshot: Map<String, Int>
-        synchronized(this) {
-            totalsSnapshot = totals.toMap()
-            countsSnapshot = counts.toMap()
-        }
-        Log.d(
-            TAG,
-            "scan=$modeName elapsed=${elapsed}ms visited=$visited fingerprinted=$fingerprinted reused=$skippedUnchanged"
-        )
-        totalsSnapshot.forEach { (name, duration) ->
-            Log.d(TAG, "metric.$name=${duration}ms")
-        }
-        countsSnapshot.forEach { (name, count) ->
-            Log.d(TAG, "count.$name=$count")
-        }
-    }
-
-    private fun add(name: String, durationMs: Long) {
-        synchronized(this) {
-            totals[name] = (totals[name] ?: 0L) + durationMs
-        }
-    }
-
-    fun increment(name: String) {
-        synchronized(this) {
-            counts[name] = (counts[name] ?: 0) + 1
-        }
-    }
-
-    companion object {
-        private const val TAG = "SimilarScanMetrics"
     }
 }

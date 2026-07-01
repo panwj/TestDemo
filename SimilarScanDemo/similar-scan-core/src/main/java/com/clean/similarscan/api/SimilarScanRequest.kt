@@ -13,12 +13,15 @@ package com.clean.similarscan.api
  * 字节级证据。
  * @param videoFingerprintMode 视频指纹模式。默认 BALANCED，在系统缩略图之外补充少量 MMR
  * 帧；
+ * @param enableMetricsLog 是否在扫描完成后输出耗时明细日志。默认 true，便于开发和真机
+ * 测试阶段观察扫描瓶颈；正式接入时可关闭。
  */
 data class SimilarScanRequest(
     val forceFull: Boolean = false,
     val imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
     val calculateDuplicateSha256DuringScan: Boolean = false,
-    val videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+    val videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED,
+    val enableMetricsLog: Boolean = true
 ) {
     internal val normalizedImageFingerprintSize: Int
         get() = imageFingerprintSize.coerceIn(MIN_IMAGE_FINGERPRINT_SIZE, MAX_IMAGE_FINGERPRINT_SIZE)

@@ -68,15 +68,22 @@ class MainActivity : Activity() {
             val processed = event.getIntExtra(MediaScanService.EXTRA_PROCESSED_COUNT, 0)
             val groups = event.getIntExtra(MediaScanService.EXTRA_GROUP_COUNT, 0)
             val message = event.getStringExtra(MediaScanService.EXTRA_MESSAGE).orEmpty()
+            val elapsedTimeText = event.getStringExtra(MediaScanService.EXTRA_ELAPSED_TIME_TEXT).orEmpty()
             when (event.action) {
                 MediaScanService.ACTION_PROGRESS -> {
                     isScanning = true
                     statusText.text = message
-                    summaryText.text = "Scanning $processed media · $groups groups"
+                    summaryText.text = buildScanSummary(
+                        prefix = "Scanning $processed media · $groups groups",
+                        elapsedTimeText = elapsedTimeText
+                    )
                     scheduleThrottledRender()
                 }
                 MediaScanService.ACTION_COMPLETE -> finishScanUi(
-                    "Reviewed $processed changed media files",
+                    buildScanSummary(
+                        prefix = "Reviewed $processed media files",
+                        elapsedTimeText = elapsedTimeText
+                    ),
                     message
                 )
                 MediaScanService.ACTION_FAILED -> finishScanUi("Scan interrupted", message)
@@ -333,6 +340,14 @@ class MainActivity : Activity() {
         summaryText.text = summary
         statusText.text = message
         loadAndRenderCachedGroups(updateCachedSummary = false)
+    }
+
+    private fun buildScanSummary(prefix: String, elapsedTimeText: String): String {
+        return if (elapsedTimeText.isBlank()) {
+            prefix
+        } else {
+            "$prefix · Time $elapsedTimeText"
+        }
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
