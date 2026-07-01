@@ -5,6 +5,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.Presentation
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.ExportException
@@ -21,7 +22,8 @@ import com.clean.videocompress.api.model.VideoCompressResult
 import com.clean.videocompress.api.model.VideoCompressStage
 import com.clean.videocompress.internal.engine.BaseVideoCompressEngine
 import com.clean.videocompress.internal.media.VideoStoreWriter
-import com.clean.videocompress.internal.util.BitrateCalculator
+import com.clean.videocompress.internal.policy.Media3CompressionPlan
+import com.clean.videocompress.internal.policy.Media3CompressionPolicy
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -38,6 +40,11 @@ internal class Media3VideoCompressEngine(
     ): VideoCompressTask {
         val asset = request.asset
         val startTime = System.currentTimeMillis()
+        val plan = Media3CompressionPolicy.buildPlan(asset, request.option)
+        plan.rejectReason?.let { reason ->
+            dispatchFailure(observer, VideoCompressError.NotWorthCompressing(reason))
+            return Media3VideoCompressTask(onCancel = {})
+        }
         val outputFile = File(
             context.cacheDir,
             "video_compress/media3_${asset.id}_${System.currentTimeMillis()}.mp4"
@@ -58,7 +65,7 @@ internal class Media3VideoCompressEngine(
             val encoderFactory = DefaultEncoderFactory.Builder(context)
                 .setRequestedVideoEncoderSettings(
                     VideoEncoderSettings.Builder()
-                        .setBitrate(BitrateCalculator.targetBitrate(asset, request.option))
+                        .setBitrate(plan.targetBitrate)
                         .setiFrameIntervalSeconds(3f)
                         .build()
                 )
@@ -90,11 +97,24 @@ internal class Media3VideoCompressEngine(
                 })
                 .build()
             transformerRef = transformer
-            val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(asset.uri)).build()
+            val editedItem = buildEditedItem(asset.uri, plan)
             transformer.start(editedItem, outputFile.absolutePath)
             pollProgress(transformer, task, request, observer, startTime)
         }
         return task
+    }
+
+    private fun buildEditedItem(uri: android.net.Uri, plan: Media3CompressionPlan): EditedMediaItem {
+        val builder = EditedMediaItem.Builder(MediaItem.fromUri(uri))
+        plan.targetHeight?.let { height ->
+            builder.setEffects(
+                androidx.media3.transformer.Effects(
+                    emptyList(),
+                    listOf(Presentation.createForHeight(height))
+                )
+            )
+        }
+        return builder.build()
     }
 
     private fun pollProgress(
@@ -143,8 +163,9 @@ internal class Media3VideoCompressEngine(
         )
         ioExecutor.execute {
             try {
-                if (!outputFile.exists() || outputFile.length() <= 0L) {
-                    dispatchFailure(observer, VideoCompressError.SourceNotFound)
+                val validationReason = Media3CompressionPolicy.validateResult(request.asset, outputFile)
+                if (validationReason != null) {
+                    dispatchFailure(observer, VideoCompressError.ValidationFailed(validationReason))
                     return@execute
                 }
                 val saved = writer.saveToMediaStore(

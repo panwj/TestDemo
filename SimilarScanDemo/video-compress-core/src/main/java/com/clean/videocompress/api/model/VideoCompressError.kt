@@ -4,7 +4,9 @@ sealed class VideoCompressError {
     data object PermissionDenied : VideoCompressError()
     data object SourceNotFound : VideoCompressError()
     data object UnsupportedFormat : VideoCompressError()
+    data class NotWorthCompressing(val reason: String) : VideoCompressError()
     data class EngineFailed(val message: String?, val cause: Throwable?) : VideoCompressError()
     data class SaveFailed(val message: String?, val cause: Throwable?) : VideoCompressError()
+    data class ValidationFailed(val reason: String) : VideoCompressError()
     data object Cancelled : VideoCompressError()
 }
