@@ -19,4 +19,11 @@ object FormatUtils {
         }
         return String.format(Locale.US, "%.1f %s", value, units[unit])
     }
+
+    fun formatDuration(durationMs: Long): String {
+        val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
+        val minutes = totalSeconds / 60L
+        val seconds = totalSeconds % 60L
+        return String.format(Locale.US, "%d:%02d", minutes, seconds)
+    }
 }

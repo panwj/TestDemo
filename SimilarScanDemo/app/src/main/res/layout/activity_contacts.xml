@@ -10,15 +10,13 @@
         android:layout_height="wrap_content"
         android:background="#071126"
         android:orientation="vertical"
-        android:paddingLeft="16dp"
-        android:paddingTop="16dp"
-        android:paddingRight="16dp"
-        android:paddingBottom="12dp">
+        android:padding="16dp">
 
         <TextView
+            android:id="@+id/titleText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Your Storage"
+            android:text="Contacts"
             android:textColor="#FFFFFF"
             android:textSize="28sp"
             android:textStyle="bold" />
@@ -28,47 +26,27 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="Scan your gallery and organize unnecessary media"
+            android:text="Organize duplicated and incomplete contacts"
             android:textColor="#94A3B8"
             android:textSize="13sp" />
 
-        <ProgressBar
-            android:id="@+id/progressBar"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="match_parent"
-            android:layout_height="6dp"
-            android:layout_marginTop="10dp"
-            android:indeterminate="true"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Allow access to photos and videos to start scanning."
-            android:textColor="#64748B"
-            android:textSize="12sp" />
-
         <Button
-            android:id="@+id/scanButton"
+            android:id="@+id/permissionButton"
             android:layout_width="match_parent"
             android:layout_height="44dp"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="12dp"
             android:background="@drawable/button_primary"
-            android:text="Allow access to Gallery"
+            android:text="Allow contacts access"
             android:textAllCaps="false"
             android:textColor="#FFFFFF"
-            android:textSize="14sp" />
-
+            android:visibility="gone" />
     </LinearLayout>
 
     <ListView
-        android:id="@+id/categoryList"
+        android:id="@+id/contactList"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:clipToPadding="false"
         android:divider="@android:color/transparent"
         android:dividerHeight="0dp"
         android:paddingBottom="12dp" />
@@ -87,10 +65,10 @@
             android:layout_width="0dp"
             android:layout_height="48dp"
             android:layout_weight="1"
-            android:background="@drawable/tab_selected"
+            android:background="@drawable/tab_unselected"
             android:text="Photo Swiping"
             android:textAllCaps="false"
-            android:textColor="#FFFFFF"
+            android:textColor="#94A3B8"
             android:textSize="12sp" />
 
         <Button
@@ -111,10 +89,10 @@
             android:layout_height="48dp"
             android:layout_marginLeft="10dp"
             android:layout_weight="1"
-            android:background="@drawable/tab_unselected"
+            android:background="@drawable/tab_selected"
             android:text="Contacts"
             android:textAllCaps="false"
-            android:textColor="#94A3B8"
+            android:textColor="#FFFFFF"
             android:textSize="12sp" />
     </LinearLayout>
 </LinearLayout>

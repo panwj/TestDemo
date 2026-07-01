@@ -23,6 +23,7 @@ android {
 
 dependencies {
     implementation(project(":similar-scan-core"))
+    implementation(project(":video-compress-core"))
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.android.exoplayer:exoplayer-core:2.19.1")
     implementation("com.google.android.exoplayer:exoplayer-ui:2.19.1")

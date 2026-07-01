@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "SimilarScanDemo"
 include(":app")
 include(":similar-scan-core")
+include(":video-compress-core")

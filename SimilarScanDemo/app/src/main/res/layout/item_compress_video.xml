@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="182dp"
+    android:background="@drawable/group_card"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <ImageView
+        android:id="@+id/videoThumb"
+        android:layout_width="match_parent"
+        android:layout_height="126dp"
+        android:background="@drawable/thumb_placeholder"
+        android:scaleType="centerCrop" />
+
+    <TextView
+        android:id="@+id/videoName"
+        android:layout_width="match_parent"
+        android:layout_height="22dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#E2E8F0"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/videoSize"
+        android:layout_width="match_parent"
+        android:layout_height="18dp"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textColor="#94A3B8"
+        android:textSize="11sp" />
+</LinearLayout>

@@ -26,6 +26,8 @@ import com.example.similarscandemo.permission.NotificationPermissionHelper
 import com.example.similarscandemo.service.MediaScanService
 import com.clean.similarscan.api.SimilarScanClient
 import com.clean.similarscan.api.SimilarScanSdk
+import com.example.similarscandemo.compress.VideoCompressActivity
+import com.example.similarscandemo.contacts.ContactsActivity
 import com.example.similarscandemo.ui.ProductCategoryAdapter
 import com.example.similarscandemo.util.DeleteOperationStore
 import java.util.concurrent.Executors
@@ -37,6 +39,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class MainActivity : Activity() {
     private lateinit var scanClient: SimilarScanClient
     private lateinit var scanButton: Button
+    private lateinit var compressTabButton: Button
+    private lateinit var contactsTabButton: Button
     private lateinit var progressBar: ProgressBar
     private lateinit var statusText: TextView
     private lateinit var summaryText: TextView
@@ -111,6 +115,8 @@ class MainActivity : Activity() {
             DeleteOperationStore.finish(this)
         }
         scanButton = findViewById(R.id.scanButton)
+        compressTabButton = findViewById(R.id.compressTabButton)
+        contactsTabButton = findViewById(R.id.contactsTabButton)
         progressBar = findViewById(R.id.progressBar)
         statusText = findViewById(R.id.statusText)
         summaryText = findViewById(R.id.summaryText)
@@ -118,6 +124,12 @@ class MainActivity : Activity() {
 
         showCachedResults()
         scanButton.setOnClickListener { handleScanButtonClick() }
+        compressTabButton.setOnClickListener {
+            startActivity(Intent(this, VideoCompressActivity::class.java))
+        }
+        contactsTabButton.setOnClickListener {
+            startActivity(Intent(this, ContactsActivity::class.java))
+        }
         if (intent.getBooleanExtra(EXTRA_REQUEST_PERMISSION, false)) {
             mainHandler.post { handleScanButtonClick() }
         }
