@@ -24,6 +24,10 @@
             android:name=".service.MediaScanService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".compress.VideoCompressForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <activity
             android:name=".ImagePreviewActivity"

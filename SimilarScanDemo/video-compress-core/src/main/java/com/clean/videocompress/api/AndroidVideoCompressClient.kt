@@ -10,6 +10,7 @@ import com.clean.videocompress.internal.engine.nativecodec.NativeCodecVideoCompr
 import com.clean.videocompress.internal.media.VideoBucketBuilder
 import com.clean.videocompress.internal.media.VideoMediaRepository
 import com.clean.videocompress.internal.media.VideoStoreWriter
+import com.clean.videocompress.internal.queue.SequentialVideoCompressQueue
 
 internal class AndroidVideoCompressClient(
     private val context: Context,
@@ -36,5 +37,12 @@ internal class AndroidVideoCompressClient(
         observer: VideoCompressObserver
     ): VideoCompressTask {
         return engine.compress(request, observer)
+    }
+
+    override fun compressQueue(
+        requests: List<VideoCompressRequest>,
+        observer: VideoCompressQueueObserver
+    ): VideoCompressQueueTask {
+        return SequentialVideoCompressQueue(engine).start(requests, observer)
     }
 }

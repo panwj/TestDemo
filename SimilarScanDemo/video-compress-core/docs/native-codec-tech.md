@@ -65,6 +65,14 @@ VideoCompressClient.compress(request, observer)
 
 但内部实现完全独立，不共享引擎代码。
 
+Native 同样支持 SDK 层压缩队列：
+
+```kotlin
+client.compressQueue(requests, observer)
+```
+
+队列在引擎上一层，因此 Native 和 Media3 共享同一套顺序调度、进度汇总、取消和失败收集逻辑。
+
 ## 5. 三档压缩如何生效
 
 Native 也会读取用户选择的 `VideoCompressOption`。
@@ -153,4 +161,3 @@ Native 理论上也可以做很多优化，例如：
 - 输出时长是否接近原视频。
 - 音频是否正常。
 - 文件体积是否真正变小。
-

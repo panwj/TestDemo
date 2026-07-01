@@ -22,4 +22,13 @@ interface VideoCompressClient {
      * 执行一次视频压缩。返回的任务可用于取消压缩。
      */
     fun compress(request: VideoCompressRequest, observer: VideoCompressObserver): VideoCompressTask
+
+    /**
+     * 顺序执行一组视频压缩任务。队列会限制同一时刻只压缩一个视频，避免多个编码器
+     * 同时工作导致内存、CPU 或硬件编码器资源抢占。
+     */
+    fun compressQueue(
+        requests: List<VideoCompressRequest>,
+        observer: VideoCompressQueueObserver
+    ): VideoCompressQueueTask
 }

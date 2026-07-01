@@ -2,8 +2,12 @@ package com.example.similarscandemo.compress
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
@@ -13,15 +17,9 @@ import android.widget.ProgressBar
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
-import com.clean.videocompress.api.VideoCompressObserver
-import com.clean.videocompress.api.VideoCompressSdk
-import com.clean.videocompress.api.VideoCompressTask
-import com.clean.videocompress.api.model.CompressVideoAsset
-import com.clean.videocompress.api.model.VideoCompressError
 import com.clean.videocompress.api.model.VideoCompressOption
-import com.clean.videocompress.api.model.VideoCompressProgress
-import com.clean.videocompress.api.model.VideoCompressRequest
 import com.clean.videocompress.api.model.VideoCompressResult
+import com.clean.videocompress.api.model.CompressVideoAsset
 import com.example.similarscandemo.R
 import com.example.similarscandemo.SubscriptionActivity
 import com.example.similarscandemo.VideoPlayerActivity
@@ -34,8 +32,49 @@ class VideoCompressDetailActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var compressButton: Button
     private lateinit var options: List<VideoCompressOption>
-    private var task: VideoCompressTask? = null
     private var compressedOutputUri: Uri? = null
+    private var receiverRegistered = false
+    private val compressReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val event = intent ?: return
+            val eventAssetId = event.getLongExtra(VideoCompressForegroundService.EXTRA_ASSET_ID, asset.id)
+            if (eventAssetId != asset.id) return
+            when (event.action) {
+                VideoCompressForegroundService.ACTION_STARTED,
+                VideoCompressForegroundService.ACTION_PROGRESS -> {
+                    val percent = event.getIntExtra(VideoCompressForegroundService.EXTRA_PERCENT, 0)
+                    val message = event.getStringExtra(VideoCompressForegroundService.EXTRA_MESSAGE).orEmpty()
+                    progressBar.visibility = View.VISIBLE
+                    progressBar.progress = percent
+                    statusText.text = "$message · $percent%"
+                    compressButton.isEnabled = false
+                }
+
+                VideoCompressForegroundService.ACTION_SUCCESS -> {
+                    compressButton.isEnabled = true
+                    val outputUri = event.getStringExtra(VideoCompressForegroundService.EXTRA_OUTPUT_URI)
+                        ?.let(Uri::parse)
+                        ?: return
+                    compressedOutputUri = outputUri
+                    showCompleteDialog(
+                        VideoCompressResult(
+                            sourceAsset = asset,
+                            outputUri = outputUri,
+                            outputSizeBytes = event.getLongExtra(VideoCompressForegroundService.EXTRA_OUTPUT_SIZE, 0L),
+                            savedBytes = event.getLongExtra(VideoCompressForegroundService.EXTRA_SAVED_BYTES, 0L),
+                            elapsedMs = event.getLongExtra(VideoCompressForegroundService.EXTRA_ELAPSED_MS, 0L)
+                        )
+                    )
+                }
+
+                VideoCompressForegroundService.ACTION_FAILED -> {
+                    compressButton.isEnabled = true
+                    statusText.text = event.getStringExtra(VideoCompressForegroundService.EXTRA_MESSAGE)
+                        ?: "Compression failed"
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,9 +101,17 @@ class VideoCompressDetailActivity : Activity() {
         compressButton.setOnClickListener { confirmAndStart() }
     }
 
-    override fun onDestroy() {
-        task?.cancel()
-        super.onDestroy()
+    override fun onStart() {
+        super.onStart()
+        registerCompressReceiver()
+    }
+
+    override fun onStop() {
+        if (receiverRegistered) {
+            unregisterReceiver(compressReceiver)
+            receiverRegistered = false
+        }
+        super.onStop()
     }
 
     private fun renderOptions() {
@@ -123,36 +170,36 @@ class VideoCompressDetailActivity : Activity() {
         compressButton.isEnabled = false
         progressBar.visibility = View.VISIBLE
         quotaStore.consumeOneFreeQuota()
-        val client = VideoCompressSdk.create(applicationContext)
-        task = client.compress(
-            VideoCompressRequest(asset, option),
-            object : VideoCompressObserver {
-                override fun onStart(asset: CompressVideoAsset) {
-                    statusText.text = "Preparing compression..."
-                }
-
-                override fun onProgress(progress: VideoCompressProgress) {
-                    progressBar.progress = progress.percent
-                    statusText.text = "${progress.stage.name.lowercase().replace('_', ' ')} · ${progress.percent}%"
-                }
-
-                override fun onSuccess(result: VideoCompressResult) {
-                    compressButton.isEnabled = true
-                    compressedOutputUri = result.outputUri
-                    showCompleteDialog(result)
-                }
-
-                override fun onFailure(error: VideoCompressError) {
-                    compressButton.isEnabled = true
-                    statusText.text = "Compression failed: $error"
-                }
-
-                override fun onCancelled(assetId: Long) {
-                    compressButton.isEnabled = true
-                    statusText.text = "Compression cancelled"
-                }
-            }
+        statusText.text = "Compression queued..."
+        val intent = VideoAssetIntent.put(
+            Intent(this, VideoCompressForegroundService::class.java),
+            asset
         )
+            .putExtra(VideoCompressForegroundService.EXTRA_OPTION_KEY, option.key)
+            .putExtra(VideoCompressForegroundService.EXTRA_OPTION_TITLE, option.title)
+            .putExtra(VideoCompressForegroundService.EXTRA_OPTION_DESCRIPTION, option.description)
+            .putExtra(VideoCompressForegroundService.EXTRA_OPTION_RATE, option.compressionRatePercent)
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun registerCompressReceiver() {
+        if (receiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(VideoCompressForegroundService.ACTION_STARTED)
+            addAction(VideoCompressForegroundService.ACTION_PROGRESS)
+            addAction(VideoCompressForegroundService.ACTION_SUCCESS)
+            addAction(VideoCompressForegroundService.ACTION_FAILED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(compressReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(compressReceiver, filter)
+        }
+        receiverRegistered = true
     }
 
     private fun showCompleteDialog(result: VideoCompressResult) {
