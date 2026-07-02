@@ -11,7 +11,17 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+/**
+ * 压缩结果保存器。
+ *
+ * 压缩引擎只负责生成 app cache 下的临时 MP4，最终发布到系统媒体库统一由这里完成。
+ */
 internal class VideoStoreWriter(private val context: Context) {
+    /**
+     * 保存压缩结果到系统媒体库。
+     *
+     * Android 10+ 使用分区存储；Android 9 及以下写入公共 Movies 目录并触发媒体扫描。
+     */
     fun saveToMediaStore(sourceFile: File, displayName: String): SavedVideo {
         if (Build.VERSION.SDK_INT < 29) {
             return saveLegacy(sourceFile, displayName)
@@ -19,6 +29,11 @@ internal class VideoStoreWriter(private val context: Context) {
         return saveScopedStorage(sourceFile, displayName)
     }
 
+    /**
+     * Android 10+ 保存路径。
+     *
+     * 先以 IS_PENDING=1 写入，写完后再发布，避免系统相册看到半成品文件。
+     */
     private fun saveScopedStorage(sourceFile: File, displayName: String): SavedVideo {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
@@ -46,6 +61,11 @@ internal class VideoStoreWriter(private val context: Context) {
         }
     }
 
+    /**
+     * Android 9 及以下保存路径。
+     *
+     * 旧系统没有分区存储，需要写入真实文件路径，并通知媒体扫描器刷新相册。
+     */
     private fun saveLegacy(sourceFile: File, displayName: String): SavedVideo {
         val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
         if (!moviesDir.exists() && !moviesDir.mkdirs()) {
@@ -76,6 +96,9 @@ internal class VideoStoreWriter(private val context: Context) {
         }
     }
 
+    /**
+     * 生成不冲突的输出文件名。
+     */
     private fun uniqueFile(directory: File, displayName: String): File {
         val safeName = displayName.ifBlank { "compressed_${System.currentTimeMillis()}.mp4" }
         val baseName = safeName.substringBeforeLast('.', safeName)
@@ -89,6 +112,9 @@ internal class VideoStoreWriter(private val context: Context) {
         return candidate
     }
 
+    /**
+     * 旧系统写入真实文件后，需要通过 MediaScannerConnection 让系统相册尽快可见。
+     */
     private fun scanLegacyFile(file: File): Uri? {
         var resultUri: Uri? = null
         val latch = CountDownLatch(1)
@@ -105,6 +131,9 @@ internal class VideoStoreWriter(private val context: Context) {
     }
 }
 
+/**
+ * 保存到系统媒体库后的结果。
+ */
 internal data class SavedVideo(
     val uri: Uri,
     val sizeBytes: Long

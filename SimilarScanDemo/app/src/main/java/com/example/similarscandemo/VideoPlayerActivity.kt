@@ -27,10 +27,6 @@ class VideoPlayerActivity : Activity() {
             player.prepare()
             player.play()
         }
-
-        playerView.setOnClickListener {
-            finish()
-        }
     }
 
     override fun onDestroy() {

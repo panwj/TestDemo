@@ -16,6 +16,9 @@ import com.clean.videocompress.api.model.CompressVideoAsset
  * - bitrate / frameRate：只在真正压缩当前视频时读取，避免拖慢列表页。
  */
 internal class VideoFormatInspector(private val context: Context) {
+    /**
+     * 读取当前视频的格式画像。
+     */
     fun inspect(asset: CompressVideoAsset): VideoFormatProfile {
         val extractor = MediaExtractor()
         return try {
@@ -47,6 +50,9 @@ internal class VideoFormatInspector(private val context: Context) {
         }
     }
 
+    /**
+     * 通过颜色传输函数和颜色标准判断是否属于 HDR。
+     */
     private fun isHdr(format: MediaFormat): Boolean {
         if (Build.VERSION.SDK_INT < 24) return false
         val transfer = if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
@@ -64,6 +70,9 @@ internal class VideoFormatInspector(private val context: Context) {
             standard == MediaFormat.COLOR_STANDARD_BT2020
     }
 
+    /**
+     * 安全读取 MediaFormat 中的整数属性。
+     */
     private fun readInt(format: MediaFormat, key: String): Int {
         return try {
             if (format.containsKey(key)) format.getInteger(key) else 0
@@ -77,6 +86,9 @@ internal class VideoFormatInspector(private val context: Context) {
     }
 }
 
+/**
+ * 压缩前读取到的视频格式画像。
+ */
 internal data class VideoFormatProfile(
     val videoMime: String = "",
     val isHevc: Boolean = false,

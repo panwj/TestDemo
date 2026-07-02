@@ -31,6 +31,12 @@ import java.util.Collections
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Media3 Transformer 压缩引擎。
+ *
+ * 这是 SDK 默认生产方案：先生成压缩计划，再由 Media3 转成 H.264 MP4，
+ * 最后保存到系统媒体库。
+ */
 @OptIn(UnstableApi::class)
 internal class Media3VideoCompressEngine(
     private val context: Context,
@@ -41,6 +47,11 @@ internal class Media3VideoCompressEngine(
     private val closed = AtomicBoolean(false)
     private val activeTasks = Collections.synchronizedSet(mutableSetOf<Media3VideoCompressTask>())
 
+    /**
+     * 执行单个视频压缩。
+     *
+     * 该方法会完成：格式探测、策略计划、空间检查、Media3 转码、结果保存。
+     */
     override fun compress(
         request: VideoCompressRequest,
         observer: VideoCompressObserver
@@ -132,6 +143,9 @@ internal class Media3VideoCompressEngine(
         return task
     }
 
+    /**
+     * 关闭引擎并取消正在运行的任务。
+     */
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             activeTasks.toList().forEach { it.cancel() }
@@ -141,6 +155,11 @@ internal class Media3VideoCompressEngine(
         }
     }
 
+    /**
+     * 构建 Media3 输入项。
+     *
+     * 如果压缩计划要求降分辨率，会通过 Presentation effect 处理。
+     */
     private fun buildEditedItem(uri: android.net.Uri, plan: Media3CompressionPlan): EditedMediaItem {
         val builder = EditedMediaItem.Builder(MediaItem.fromUri(uri))
         plan.targetHeight?.let { height ->
@@ -154,6 +173,9 @@ internal class Media3VideoCompressEngine(
         return builder.build()
     }
 
+    /**
+     * 轮询 Media3 转码进度。
+     */
     private fun pollProgress(
         transformer: Transformer,
         task: Media3VideoCompressTask,
@@ -183,6 +205,11 @@ internal class Media3VideoCompressEngine(
         }
     }
 
+    /**
+     * 保存转码结果。
+     *
+     * 保存前会做基础校验，保存完成后删除 cache 临时文件。
+     */
     private fun saveResult(
         request: VideoCompressRequest,
         observer: VideoCompressObserver,
@@ -232,6 +259,9 @@ internal class Media3VideoCompressEngine(
         }
     }
 
+    /**
+     * 标记任务结束并从活动任务集合移除。
+     */
     private fun finishTask(task: Media3VideoCompressTask) {
         task.markFinished()
         activeTasks.remove(task)

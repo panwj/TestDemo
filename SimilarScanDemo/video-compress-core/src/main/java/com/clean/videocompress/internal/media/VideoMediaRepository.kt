@@ -6,7 +6,15 @@ import android.net.Uri
 import android.provider.MediaStore
 import com.clean.videocompress.api.model.CompressVideoAsset
 
+/**
+ * 视频媒体库读取器。
+ *
+ * 只读取列表展示和粗略估算需要的字段，不在列表阶段逐个打开视频文件。
+ */
 internal class VideoMediaRepository(private val context: Context) {
+    /**
+     * 从系统 MediaStore 读取视频资源，按添加时间倒序返回。
+     */
     fun loadVideos(): List<CompressVideoAsset> {
         val videos = mutableListOf<CompressVideoAsset>()
         val projection = arrayOf(

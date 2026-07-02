@@ -15,6 +15,9 @@ import java.io.File
  * 因此这里同时检查临时目录和媒体库所在存储，避免长时间编码后才发现无法保存。
  */
 internal object StorageSpaceChecker {
+    /**
+     * 压缩前检查 cache 和媒体库空间是否足够。
+     */
     fun checkBeforeCompress(
         context: Context,
         estimatedOutputBytes: Long,
@@ -41,6 +44,9 @@ internal object StorageSpaceChecker {
         return null
     }
 
+    /**
+     * 根据目标视频码率估算输出大小。
+     */
     fun estimateOutputBytes(asset: CompressVideoAsset, targetBitrate: Int): Long {
         if (asset.durationMs <= 0L || targetBitrate <= 0) return asset.sizeBytes
         val videoBytes = targetBitrate.toLong() * asset.durationMs / 8_000L
@@ -48,6 +54,9 @@ internal object StorageSpaceChecker {
         return (videoBytes + audioReserveBytes).coerceAtLeast(MIN_OUTPUT_BYTES)
     }
 
+    /**
+     * 给估算输出大小增加安全余量。
+     */
     private fun requiredBytes(estimatedOutputBytes: Long, sourceSizeBytes: Long): Long {
         val estimated = when {
             estimatedOutputBytes > 0L -> estimatedOutputBytes
@@ -57,6 +66,9 @@ internal object StorageSpaceChecker {
         return estimated + SAFETY_MARGIN_BYTES
     }
 
+    /**
+     * 查询指定目录所在文件系统的可用空间。
+     */
     private fun availableBytes(file: File?): Long? {
         val target = existingStatTarget(file) ?: return null
         return try {
@@ -66,6 +78,9 @@ internal object StorageSpaceChecker {
         }
     }
 
+    /**
+     * 找到可用于 StatFs 的已存在父目录。
+     */
     private fun existingStatTarget(file: File?): File? {
         var current = file
         while (current != null && !current.exists()) {
@@ -74,6 +89,9 @@ internal object StorageSpaceChecker {
         return current
     }
 
+    /**
+     * 获取系统媒体库保存目录所在位置。
+     */
     @Suppress("DEPRECATION")
     private fun mediaLibraryStatDir(context: Context): File {
         val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)

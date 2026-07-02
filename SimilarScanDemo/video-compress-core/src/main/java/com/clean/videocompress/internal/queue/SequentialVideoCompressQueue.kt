@@ -28,6 +28,9 @@ internal class SequentialVideoCompressQueue(
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * 启动批量压缩队列。
+     */
     fun start(
         requests: List<VideoCompressRequest>,
         observer: VideoCompressQueueObserver
@@ -45,6 +48,11 @@ internal class SequentialVideoCompressQueue(
         return task
     }
 
+    /**
+     * 顺序执行队列中的每个请求。
+     *
+     * 每个任务通过 CountDownLatch 等待成功、失败或取消后，才会进入下一个任务。
+     */
     private fun runQueue(
         requests: List<VideoCompressRequest>,
         observer: VideoCompressQueueObserver,
@@ -103,6 +111,9 @@ internal class SequentialVideoCompressQueue(
         }
     }
 
+    /**
+     * 队列回调统一切到主线程。
+     */
     private fun dispatch(block: () -> Unit) {
         mainHandler.post(block)
     }

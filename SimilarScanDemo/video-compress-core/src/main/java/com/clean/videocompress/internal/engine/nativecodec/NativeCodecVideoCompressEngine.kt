@@ -40,6 +40,11 @@ internal class NativeCodecVideoCompressEngine(
     private val closed = AtomicBoolean(false)
     private val activeTasks = Collections.synchronizedSet(mutableSetOf<NativeCodecVideoCompressTask>())
 
+    /**
+     * 执行 Native 备用压缩。
+     *
+     * Native 只作为兜底方案，当前明确拒绝 HEVC/HDR，复杂格式交给 Media3 主链路。
+     */
     override fun compress(
         request: VideoCompressRequest,
         observer: VideoCompressObserver
@@ -140,6 +145,9 @@ internal class NativeCodecVideoCompressEngine(
         return task
     }
 
+    /**
+     * 关闭 Native 引擎并取消正在运行的任务。
+     */
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             activeTasks.toList().forEach { it.cancel() }
@@ -148,6 +156,11 @@ internal class NativeCodecVideoCompressEngine(
         }
     }
 
+    /**
+     * 执行原生转码流程。
+     *
+     * 流程：Extractor 读取视频轨 -> Decoder 解码 -> Encoder 编码 H.264 -> Muxer 写 MP4。
+     */
     private fun transcode(
         request: VideoCompressRequest,
         outputFile: File,
@@ -374,6 +387,9 @@ internal class NativeCodecVideoCompressEngine(
         return if (muxerStarted) audioOutputTrack else null
     }
 
+    /**
+     * 为音频轨单独创建 Extractor。
+     */
     private fun createAudioExtractor(request: VideoCompressRequest): MediaExtractor? {
         val extractor = MediaExtractor()
         return try {
@@ -390,6 +406,11 @@ internal class NativeCodecVideoCompressEngine(
         }
     }
 
+    /**
+     * 音频轨透传。
+     *
+     * 这里不重新编码音频，只把原始音频 sample 写入输出 MP4。
+     */
     private fun copyAudioSamples(
         extractor: MediaExtractor,
         muxer: MediaMuxer,
@@ -411,6 +432,9 @@ internal class NativeCodecVideoCompressEngine(
         }
     }
 
+    /**
+     * 查找指定 MIME 前缀的轨道，例如 video/ 或 audio/。
+     */
     private fun selectTrack(extractor: MediaExtractor, mimePrefix: String): Int {
         for (index in 0 until extractor.trackCount) {
             val format = extractor.getTrackFormat(index)
@@ -420,6 +444,9 @@ internal class NativeCodecVideoCompressEngine(
         return -1
     }
 
+    /**
+     * 根据编码输出时间戳估算整体进度。
+     */
     private fun progressFromPresentationTime(durationMs: Long, presentationTimeUs: Long): Int {
         return if (durationMs > 0L) {
             ((presentationTimeUs / 1000L) * 95L / durationMs).toInt().coerceIn(1, 95)
@@ -428,6 +455,9 @@ internal class NativeCodecVideoCompressEngine(
         }
     }
 
+    /**
+     * MediaCodec 常要求宽高为偶数，奇数时向下取偶数。
+     */
     private fun Int.makeEven(): Int {
         return if (this % 2 == 0) this else this - 1
     }

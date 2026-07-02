@@ -12,6 +12,11 @@ data class VideoCompressOption(
     val compressionRatePercent: Int
 ) {
     companion object {
+        /**
+         * SDK 默认的三档压缩配置。
+         *
+         * 业务层可以通过 VideoCompressConfig 覆盖这些档位名称和压缩比例。
+         */
         fun defaults(): List<VideoCompressOption> {
             return listOf(
                 VideoCompressOption("low", "Low Quality", "Save the most space", 70),

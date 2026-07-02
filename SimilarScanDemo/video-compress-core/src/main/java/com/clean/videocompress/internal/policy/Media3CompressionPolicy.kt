@@ -13,6 +13,11 @@ import kotlin.math.max
  * 保持 Media3 引擎主体只关心 Transformer 调用。
  */
 internal object Media3CompressionPolicy {
+    /**
+     * 生成一次 Media3 压缩计划。
+     *
+     * 计划包含目标码率、是否降分辨率、预计节省空间、是否拒绝压缩等信息。
+     */
     fun buildPlan(
         asset: CompressVideoAsset,
         option: VideoCompressOption,
@@ -68,6 +73,9 @@ internal object Media3CompressionPolicy {
         )
     }
 
+    /**
+     * 校验压缩后的临时文件是否有基本收益。
+     */
     fun validateResult(asset: CompressVideoAsset, outputFile: File): String? {
         if (!outputFile.exists() || outputFile.length() <= 0L) {
             return "Output file is empty."
@@ -78,6 +86,9 @@ internal object Media3CompressionPolicy {
         return null
     }
 
+    /**
+     * 判断当前视频是否不适合继续压缩。
+     */
     private fun rejectReason(
         asset: CompressVideoAsset,
         sourceBitrate: Int,
@@ -102,6 +113,11 @@ internal object Media3CompressionPolicy {
         return null
     }
 
+    /**
+     * 根据视频尺寸、码率、帧率、格式和时长动态调整压缩比例。
+     *
+     * 压缩比例越大，目标码率越低；HEVC、高帧率、短视频会更保守。
+     */
     private fun dynamicCompressionRate(
         asset: CompressVideoAsset,
         option: VideoCompressOption,
@@ -139,6 +155,9 @@ internal object Media3CompressionPolicy {
         return rate.coerceIn(10, 85)
     }
 
+    /**
+     * 决定是否需要降分辨率。
+     */
     private fun targetHeight(sourceWidth: Int, sourceHeight: Int): Int? {
         val longEdge = max(sourceWidth, sourceHeight)
         val shortEdge = minOf(sourceWidth, sourceHeight)
@@ -150,26 +169,44 @@ internal object Media3CompressionPolicy {
         }
     }
 
+    /**
+     * 获取真实源码率。优先使用压缩前读取的 MediaFormat 码率。
+     */
     private fun sourceBitrate(asset: CompressVideoAsset, profile: VideoFormatProfile): Int {
         return if (profile.bitrate > 0) profile.bitrate else BitrateCalculator.sourceBitrate(asset)
     }
 
+    /**
+     * 获取源视频帧率，异常值统一回退到 30fps。
+     */
     private fun sourceFrameRate(profile: VideoFormatProfile): Int {
         return profile.frameRate.takeIf { it in 1..MAX_REASONABLE_FRAME_RATE } ?: DEFAULT_FRAME_RATE
     }
 
+    /**
+     * 结合 rotation 修正源视频展示宽度。
+     */
     private fun sourceWidth(asset: CompressVideoAsset, profile: VideoFormatProfile): Int {
         val width = profile.width.takeIf { it > 0 } ?: asset.width
         val height = profile.height.takeIf { it > 0 } ?: asset.height
         return if (profile.rotationDegrees % 180 != 0) height else width
     }
 
+    /**
+     * 结合 rotation 修正源视频展示高度。
+     */
     private fun sourceHeight(asset: CompressVideoAsset, profile: VideoFormatProfile): Int {
         val width = profile.width.takeIf { it > 0 } ?: asset.width
         val height = profile.height.takeIf { it > 0 } ?: asset.height
         return if (profile.rotationDegrees % 180 != 0) width else height
     }
 
+    /**
+     * 计算最终目标码率。
+     *
+     * 先按用户档位计算基础目标码率，再用分辨率/帧率/HEVC 质量下限保护画质，
+     * 同时限制不超过原始码率的 92%，避免压缩收益过低。
+     */
     private fun targetBitrate(
         sourceBitrate: Int,
         compressionRatePercent: Int,
@@ -194,6 +231,9 @@ internal object Media3CompressionPolicy {
         return requested.coerceIn(boundedFloor, maxTarget)
     }
 
+    /**
+     * 按分辨率档位计算码率保护下限。
+     */
     private fun qualityBitrateFloor(
         sourceWidth: Int,
         sourceHeight: Int,
@@ -221,6 +261,9 @@ internal object Media3CompressionPolicy {
         return floor.coerceAtLeast(MIN_TARGET_BITRATE)
     }
 
+    /**
+     * 根据码率变化和分辨率缩放估算输出大小，用于空间检查和“不值得压缩”判断。
+     */
     private fun estimateOutputSize(
         asset: CompressVideoAsset,
         sourceBitrate: Int,
@@ -259,6 +302,9 @@ internal object Media3CompressionPolicy {
     private const val BITRATE_FLOOR_LOW_RESOLUTION = 800_000
 }
 
+/**
+ * Media3 压缩计划。
+ */
 internal data class Media3CompressionPlan(
     val sourceBitrate: Int,
     val targetBitrate: Int,

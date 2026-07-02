@@ -9,6 +9,11 @@ import android.content.Context
  * 弹窗和删除原视频等产品业务由接入方自行处理。
  */
 object VideoCompressSdk {
+    /**
+     * 创建 SDK client。
+     *
+     * context 会转成 applicationContext 保存，避免持有 Activity。
+     */
     fun create(context: Context, config: VideoCompressConfig = VideoCompressConfig()): VideoCompressClient {
         return AndroidVideoCompressClient(context.applicationContext, config)
     }
