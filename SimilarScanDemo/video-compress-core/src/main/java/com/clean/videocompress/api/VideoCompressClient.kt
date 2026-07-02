@@ -7,7 +7,7 @@ import com.clean.videocompress.api.model.VideoCompressRequest
 /**
  * 视频压缩能力对外门面。
  */
-interface VideoCompressClient {
+interface VideoCompressClient : AutoCloseable {
     /**
      * 从系统媒体库读取可压缩视频，并按时间倒序返回。
      */
@@ -31,4 +31,11 @@ interface VideoCompressClient {
         requests: List<VideoCompressRequest>,
         observer: VideoCompressQueueObserver
     ): VideoCompressQueueTask
+
+    /**
+     * 释放 SDK 内部线程和正在运行的压缩任务。
+     *
+     * 建议业务层在页面、Service 或业务对象不再使用压缩能力时调用。
+     */
+    override fun close()
 }

@@ -24,8 +24,12 @@ import com.clean.videocompress.internal.engine.BaseVideoCompressEngine
 import com.clean.videocompress.internal.media.VideoStoreWriter
 import com.clean.videocompress.internal.policy.Media3CompressionPlan
 import com.clean.videocompress.internal.policy.Media3CompressionPolicy
+import com.clean.videocompress.internal.policy.VideoFormatInspector
+import com.clean.videocompress.internal.util.StorageSpaceChecker
 import java.io.File
+import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 @OptIn(UnstableApi::class)
 internal class Media3VideoCompressEngine(
@@ -33,16 +37,32 @@ internal class Media3VideoCompressEngine(
     private val writer: VideoStoreWriter
 ) : BaseVideoCompressEngine() {
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val formatInspector = VideoFormatInspector(context)
+    private val closed = AtomicBoolean(false)
+    private val activeTasks = Collections.synchronizedSet(mutableSetOf<Media3VideoCompressTask>())
 
     override fun compress(
         request: VideoCompressRequest,
         observer: VideoCompressObserver
     ): VideoCompressTask {
         val asset = request.asset
+        if (closed.get()) {
+            dispatchFailure(observer, VideoCompressError.SdkClosed)
+            return Media3VideoCompressTask(onCancel = {})
+        }
         val startTime = System.currentTimeMillis()
-        val plan = Media3CompressionPolicy.buildPlan(asset, request.option)
+        val profile = formatInspector.inspect(asset)
+        val plan = Media3CompressionPolicy.buildPlan(asset, request.option, profile)
         plan.rejectReason?.let { reason ->
             dispatchFailure(observer, VideoCompressError.NotWorthCompressing(reason))
+            return Media3VideoCompressTask(onCancel = {})
+        }
+        StorageSpaceChecker.checkBeforeCompress(
+            context = context,
+            estimatedOutputBytes = plan.estimatedOutputSizeBytes,
+            sourceSizeBytes = asset.sizeBytes
+        )?.let { error ->
+            dispatchFailure(observer, error)
             return Media3VideoCompressTask(onCancel = {})
         }
         val outputFile = File(
@@ -51,11 +71,14 @@ internal class Media3VideoCompressEngine(
         )
         outputFile.parentFile?.mkdirs()
         var transformerRef: Transformer? = null
-        val task = Media3VideoCompressTask {
+        lateinit var task: Media3VideoCompressTask
+        task = Media3VideoCompressTask {
             transformerRef?.cancel()
             outputFile.delete()
+            activeTasks.remove(task)
             dispatchCancelled(observer, asset.id)
         }
+        activeTasks += task
         dispatchStart(observer, asset)
         dispatchProgress(
             observer,
@@ -77,7 +100,7 @@ internal class Media3VideoCompressEngine(
                 .addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
                         if (task.cancelled) return
-                        task.markFinished()
+                        finishTask(task)
                         saveResult(request, observer, outputFile, startTime)
                     }
 
@@ -87,11 +110,16 @@ internal class Media3VideoCompressEngine(
                         exportException: ExportException
                     ) {
                         if (task.cancelled) return
-                        task.markFinished()
+                        finishTask(task)
                         outputFile.delete()
+                        val message = if (plan.isHevcSource) {
+                            "HEVC to H.264 compression failed: ${exportException.message}"
+                        } else {
+                            exportException.message
+                        }
                         dispatchFailure(
                             observer,
-                            VideoCompressError.EngineFailed(exportException.message, exportException)
+                            VideoCompressError.EngineFailed(message, exportException)
                         )
                     }
                 })
@@ -102,6 +130,15 @@ internal class Media3VideoCompressEngine(
             pollProgress(transformer, task, request, observer, startTime)
         }
         return task
+    }
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            activeTasks.toList().forEach { it.cancel() }
+            activeTasks.clear()
+            mainHandler.removeCallbacksAndMessages(null)
+            ioExecutor.shutdownNow()
+        }
     }
 
     private fun buildEditedItem(uri: android.net.Uri, plan: Media3CompressionPlan): EditedMediaItem {
@@ -193,6 +230,11 @@ internal class Media3VideoCompressEngine(
                 outputFile.delete()
             }
         }
+    }
+
+    private fun finishTask(task: Media3VideoCompressTask) {
+        task.markFinished()
+        activeTasks.remove(task)
     }
 
     private companion object {

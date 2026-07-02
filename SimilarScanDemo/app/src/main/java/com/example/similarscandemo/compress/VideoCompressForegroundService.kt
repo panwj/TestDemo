@@ -11,9 +11,12 @@ import android.os.IBinder
 import com.clean.videocompress.api.VideoCompressQueueFailure
 import com.clean.videocompress.api.VideoCompressQueueObserver
 import com.clean.videocompress.api.VideoCompressQueueTask
+import com.clean.videocompress.api.VideoCompressClient
 import com.clean.videocompress.api.VideoCompressSdk
 import com.clean.videocompress.api.model.CompressVideoAsset
 import com.clean.videocompress.api.model.VideoCompressError
+import com.clean.videocompress.api.model.VideoCompressPermissionOperation
+import com.clean.videocompress.api.model.VideoCompressStorageLocation
 import com.clean.videocompress.api.model.VideoCompressOption
 import com.clean.videocompress.api.model.VideoCompressProgress
 import com.clean.videocompress.api.model.VideoCompressRequest
@@ -29,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class VideoCompressForegroundService : Service() {
     private val running = AtomicBoolean(false)
+    private var client: VideoCompressClient? = null
     private var queueTask: VideoCompressQueueTask? = null
 
     override fun onCreate() {
@@ -49,8 +53,8 @@ class VideoCompressForegroundService : Service() {
         }
         val option = readOption(intent)
         startForeground(NOTIFICATION_ID, notification("Preparing compression", 0, 0, 1))
-        val client = VideoCompressSdk.create(applicationContext)
-        queueTask = client.compressQueue(
+        client = VideoCompressSdk.create(applicationContext)
+        queueTask = client?.compressQueue(
             listOf(VideoCompressRequest(asset, option)),
             object : VideoCompressQueueObserver {
                 override fun onQueueStart(totalCount: Int) {
@@ -79,7 +83,9 @@ class VideoCompressForegroundService : Service() {
                     request: VideoCompressRequest,
                     error: VideoCompressError
                 ) {
-                    sendFailure(error.toString())
+                    val message = readableErrorMessage(error)
+                    updateNotification(message, 100, index, totalCount)
+                    sendFailure(request.asset.id, message)
                 }
 
                 override fun onQueueComplete(
@@ -93,7 +99,7 @@ class VideoCompressForegroundService : Service() {
                     results: List<VideoCompressResult>,
                     failures: List<VideoCompressQueueFailure>
                 ) {
-                    sendFailure("Compression cancelled")
+                    sendFailure(asset.id, "Compression cancelled")
                     finishService(startId)
                 }
             }
@@ -103,6 +109,8 @@ class VideoCompressForegroundService : Service() {
 
     override fun onDestroy() {
         queueTask?.cancel()
+        client?.close()
+        client = null
         running.set(false)
         super.onDestroy()
     }
@@ -111,6 +119,8 @@ class VideoCompressForegroundService : Service() {
 
     private fun finishService(startId: Int) {
         running.set(false)
+        client?.close()
+        client = null
         if (Build.VERSION.SDK_INT >= 24) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -151,12 +161,37 @@ class VideoCompressForegroundService : Service() {
         )
     }
 
-    private fun sendFailure(message: String) {
+    private fun sendFailure(assetId: Long, message: String) {
         sendBroadcast(
             Intent(ACTION_FAILED)
                 .setPackage(packageName)
+                .putExtra(EXTRA_ASSET_ID, assetId)
                 .putExtra(EXTRA_MESSAGE, message)
         )
+    }
+
+    private fun readableErrorMessage(error: VideoCompressError): String {
+        return when (error) {
+            VideoCompressError.Cancelled -> "Compression cancelled"
+            VideoCompressError.SdkClosed -> "Compression SDK has been released"
+            VideoCompressError.SourceNotFound -> "Source video cannot be opened"
+            is VideoCompressError.PermissionDenied -> when (error.operation) {
+                VideoCompressPermissionOperation.READ_VIDEO -> "Video permission is required"
+                VideoCompressPermissionOperation.SAVE_VIDEO -> "Storage permission is required to save compressed video"
+            }
+            is VideoCompressError.UnsupportedFormat -> error.reason
+            is VideoCompressError.NotWorthCompressing -> error.reason
+            is VideoCompressError.InsufficientStorage -> {
+                val location = when (error.location) {
+                    VideoCompressStorageLocation.TEMP_CACHE -> "temporary cache"
+                    VideoCompressStorageLocation.MEDIA_LIBRARY -> "media storage"
+                }
+                "Not enough $location space. Need ${FormatUtils.formatBytes(error.requiredBytes)}, available ${FormatUtils.formatBytes(error.availableBytes)}"
+            }
+            is VideoCompressError.EngineFailed -> error.message ?: "Video compression engine failed"
+            is VideoCompressError.SaveFailed -> error.message ?: "Compressed video cannot be saved"
+            is VideoCompressError.ValidationFailed -> error.reason
+        }
     }
 
     private fun updateNotification(message: String, percent: Int, index: Int, total: Int) {

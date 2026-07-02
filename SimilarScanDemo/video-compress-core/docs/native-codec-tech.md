@@ -148,13 +148,22 @@ Native 理论上也可以做很多优化，例如：
 - Native 保持基础压缩能力。
 - 不继续叠加复杂优化。
 - 默认生产优化主要放在 Media3 上。
+- HEVC、HDR 等复杂格式不在 Native 中做专项处理。
+- Native 会直接拒绝 HEVC 和 HDR 输入，返回 `UNSUPPORTED_FORMAT`，避免备用链路生成不稳定结果。
+- HEVC 优先走 Media3 默认方案；HDR 在 Media3 中也会被默认拦截。
+
+Native 与 Media3 共用以下 SDK 基础能力：
+
+- 顺序压缩队列。
+- 压缩前磁盘空间预检查。
+- 稳定错误码。
+- client `close()` 释放接口。
 
 ## 10. 需要重点真机验证的点
 
 如果启用 Native，需要重点验证：
 
 - 普通 H.264 MP4。
-- HEVC 视频。
 - 竖屏视频和旋转角度。
 - 长视频压缩取消。
 - 压缩结果能否播放。

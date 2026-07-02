@@ -71,6 +71,7 @@ interface VideoCompressClient {
     fun loadVideos(): List<CompressVideoAsset>
     fun buildBuckets(videos: List<CompressVideoAsset>): List<VideoBucket>
     fun compress(request: VideoCompressRequest, observer: VideoCompressObserver): VideoCompressTask
+    fun close()
 }
 ```
 
@@ -96,6 +97,12 @@ SDK 提供 `VideoCompressPermissionChecker`：
 - `LEGACY_FULL`：Android 12 及以下通过 `READ_EXTERNAL_STORAGE` 获得权限。
 
 权限申请由 Demo 的 `VideoPermissionHelper` 触发。
+
+保存权限：
+
+- Android 10+：通过 MediaStore 保存应用自己创建的视频，不需要 `WRITE_EXTERNAL_STORAGE`。
+- Android 9 及以下：保存到公共 Movies 目录需要 `WRITE_EXTERNAL_STORAGE`。
+- SDK 通过 `VideoCompressPermissionChecker.hasSaveAccess(context)` 判断是否具备保存权限。
 
 这样设计可以保证 SDK 可被其他产品复用，不强绑定某个页面或权限弹窗流程。
 
@@ -237,7 +244,13 @@ com.clean.videocompress.internal.engine.nativecodec.NativeCodecVideoCompressEngi
 - 旋转角度、宽高、奇数分辨率处理。
 - 音视频时间戳同步。
 - 长视频压缩过程中的取消和资源释放。
-- 某些 HEVC、HDR、可变帧率视频的处理结果。
+- 可变帧率视频的处理结果。
+
+当前特殊格式策略：
+
+- HEVC：默认走 Media3 Transformer，允许转成 H.264 输出；如果转码失败，页面会展示明确的 HEVC 转码失败原因。
+- HDR：默认不压缩，避免 SDR 输出导致偏色、发灰、过曝等问题。
+- Native Codec：仅作为备用方案，直接拒绝 HEVC 和 HDR 输入，避免备用链路输出不稳定结果。
 
 ## 8. 结果保存方案
 
@@ -255,6 +268,32 @@ cacheDir/video_compress/
 - Android 10+ 写入前 `IS_PENDING = 1`
 - 写入成功后 `IS_PENDING = 0`
 - 写入失败会删除已创建的 MediaStore 记录
+
+压缩前 SDK 会做磁盘空间预检查：
+
+- app cache 空间不足时返回 `INSUFFICIENT_STORAGE`。
+- 系统媒体库所在存储空间不足时返回 `INSUFFICIENT_STORAGE`。
+- 空间不足不会进入编码流程，避免长时间压缩后保存失败。
+
+SDK 对外错误提供稳定 `code`：
+
+- 权限失败：`PERMISSION_DENIED`
+- 空间不足：`INSUFFICIENT_STORAGE`
+- 格式不支持：`UNSUPPORTED_FORMAT`
+- 引擎失败：`ENGINE_FAILED`
+- 保存失败：`SAVE_FAILED`
+- 用户取消：`CANCELLED`
+- client 已释放：`SDK_CLOSED`
+
+业务层不应解析错误字符串，应优先使用 `error.code`。
+
+SDK client 支持释放：
+
+```kotlin
+client.close()
+```
+
+Demo 前台服务会在压缩完成、取消或销毁时调用 `close()`，释放 SDK 内部线程。
 
 ## 9. Demo 压缩业务
 

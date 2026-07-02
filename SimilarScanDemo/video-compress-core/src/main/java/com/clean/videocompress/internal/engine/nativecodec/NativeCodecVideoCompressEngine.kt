@@ -15,10 +15,14 @@ import com.clean.videocompress.api.model.VideoCompressResult
 import com.clean.videocompress.api.model.VideoCompressStage
 import com.clean.videocompress.internal.engine.BaseVideoCompressEngine
 import com.clean.videocompress.internal.media.VideoStoreWriter
+import com.clean.videocompress.internal.policy.VideoFormatInspector
 import com.clean.videocompress.internal.util.BitrateCalculator
+import com.clean.videocompress.internal.util.StorageSpaceChecker
 import java.io.File
 import java.nio.ByteBuffer
+import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 原生备用引擎。
@@ -32,12 +36,48 @@ internal class NativeCodecVideoCompressEngine(
     private val writer: VideoStoreWriter
 ) : BaseVideoCompressEngine() {
     private val executor = Executors.newSingleThreadExecutor()
+    private val formatInspector = VideoFormatInspector(context)
+    private val closed = AtomicBoolean(false)
+    private val activeTasks = Collections.synchronizedSet(mutableSetOf<NativeCodecVideoCompressTask>())
 
     override fun compress(
         request: VideoCompressRequest,
         observer: VideoCompressObserver
     ): VideoCompressTask {
         val task = NativeCodecVideoCompressTask()
+        if (closed.get()) {
+            dispatchFailure(observer, VideoCompressError.SdkClosed)
+            return task
+        }
+        val profile = formatInspector.inspect(request.asset)
+        if (profile.isHdr) {
+            dispatchFailure(
+                observer,
+                VideoCompressError.UnsupportedFormat(
+                    "HDR input is not supported by Native Codec fallback. Use Media3 Transformer."
+                )
+            )
+            return task
+        }
+        if (profile.isHevc) {
+            dispatchFailure(
+                observer,
+                VideoCompressError.UnsupportedFormat(
+                    "HEVC input is only supported by the Media3 Transformer path."
+                )
+            )
+            return task
+        }
+        val targetBitrate = BitrateCalculator.targetBitrate(request.asset, request.option)
+        StorageSpaceChecker.checkBeforeCompress(
+            context = context,
+            estimatedOutputBytes = StorageSpaceChecker.estimateOutputBytes(request.asset, targetBitrate),
+            sourceSizeBytes = request.asset.sizeBytes
+        )?.let { error ->
+            dispatchFailure(observer, error)
+            return task
+        }
+        activeTasks += task
         val startTime = System.currentTimeMillis()
         dispatchStart(observer, request.asset)
         executor.execute {
@@ -94,9 +134,18 @@ internal class NativeCodecVideoCompressEngine(
                 }
             } finally {
                 outputFile.delete()
+                activeTasks.remove(task)
             }
         }
         return task
+    }
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            activeTasks.toList().forEach { it.cancel() }
+            activeTasks.clear()
+            executor.shutdownNow()
+        }
     }
 
     private fun transcode(

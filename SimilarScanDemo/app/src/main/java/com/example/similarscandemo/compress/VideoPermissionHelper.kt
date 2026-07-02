@@ -19,7 +19,11 @@ object VideoPermissionHelper {
                 Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
             )
             Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
-            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            Build.VERSION.SDK_INT >= 29 -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            else -> arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
         }
         activity.requestPermissions(permissions, REQUEST_CODE)
     }

@@ -75,6 +75,12 @@ class VideoCompressActivity : Activity() {
             adapter?.submitList(emptyList())
             return
         }
+        if (!VideoCompressPermissionChecker.hasSaveAccess(this)) {
+            permissionButton.visibility = View.VISIBLE
+            summaryText.text = "Allow storage access to save compressed videos"
+            adapter?.submitList(emptyList())
+            return
+        }
         permissionButton.visibility = View.GONE
         summaryText.text = "Loading videos..."
         executor.execute {

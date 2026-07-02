@@ -12,6 +12,9 @@ import android.os.Build
  * 自行决定展示说明、调用 requestPermissions 或跳转系统设置。
  */
 object VideoCompressPermissionChecker {
+    /**
+     * 返回当前视频读取授权等级。
+     */
     fun accessLevel(context: Context): VideoAccessLevel {
         return when {
             Build.VERSION.SDK_INT >= 34 &&
@@ -34,8 +37,22 @@ object VideoCompressPermissionChecker {
         }
     }
 
+    /**
+     * 是否拥有读取视频资源的权限。
+     */
     fun hasVideoAccess(context: Context): Boolean {
         return accessLevel(context) != VideoAccessLevel.NONE
+    }
+
+    /**
+     * 是否拥有保存压缩结果到系统媒体库的权限。
+     *
+     * Android 10+ 使用分区存储，应用可以通过 MediaStore 写入自己创建的视频；
+     * Android 9 及以下写入公共 Movies 目录需要 WRITE_EXTERNAL_STORAGE。
+     */
+    fun hasSaveAccess(context: Context): Boolean {
+        return Build.VERSION.SDK_INT >= 29 ||
+            hasPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
     }
 
     private fun hasPermission(context: Context, permission: String): Boolean {

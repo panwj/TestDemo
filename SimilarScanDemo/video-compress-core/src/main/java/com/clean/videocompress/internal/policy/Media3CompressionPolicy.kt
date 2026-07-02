@@ -13,14 +13,18 @@ import kotlin.math.max
  * 保持 Media3 引擎主体只关心 Transformer 调用。
  */
 internal object Media3CompressionPolicy {
-    fun buildPlan(asset: CompressVideoAsset, option: VideoCompressOption): Media3CompressionPlan {
+    fun buildPlan(
+        asset: CompressVideoAsset,
+        option: VideoCompressOption,
+        profile: VideoFormatProfile = VideoFormatProfile()
+    ): Media3CompressionPlan {
         val sourceBitrate = BitrateCalculator.sourceBitrate(asset)
         val dynamicRate = dynamicCompressionRate(asset, option, sourceBitrate)
         val targetBitrate = BitrateCalculator.targetBitrate(asset, dynamicRate)
         val targetHeight = targetHeight(asset)
         val estimatedOutputSize = estimateOutputSize(asset, sourceBitrate, targetBitrate, targetHeight)
         val estimatedSaving = (asset.sizeBytes - estimatedOutputSize).coerceAtLeast(0L)
-        val rejectReason = rejectReason(asset, sourceBitrate, estimatedSaving)
+        val rejectReason = rejectReason(asset, sourceBitrate, estimatedSaving, profile)
         return Media3CompressionPlan(
             sourceBitrate = sourceBitrate,
             targetBitrate = targetBitrate,
@@ -28,7 +32,9 @@ internal object Media3CompressionPolicy {
             targetHeight = targetHeight,
             estimatedOutputSizeBytes = estimatedOutputSize,
             estimatedSavingBytes = estimatedSaving,
-            rejectReason = rejectReason
+            rejectReason = rejectReason,
+            sourceVideoMime = profile.videoMime,
+            isHevcSource = profile.isHevc
         )
     }
 
@@ -45,8 +51,12 @@ internal object Media3CompressionPolicy {
     private fun rejectReason(
         asset: CompressVideoAsset,
         sourceBitrate: Int,
-        estimatedSaving: Long
+        estimatedSaving: Long,
+        profile: VideoFormatProfile
     ): String? {
+        if (profile.isHdr) {
+            return "HDR video is not compressed by default to avoid color distortion."
+        }
         if (asset.durationMs in 1 until MIN_DURATION_MS) {
             return "Video is too short to compress efficiently."
         }
@@ -121,5 +131,7 @@ internal data class Media3CompressionPlan(
     val targetHeight: Int?,
     val estimatedOutputSizeBytes: Long,
     val estimatedSavingBytes: Long,
-    val rejectReason: String?
+    val rejectReason: String?,
+    val sourceVideoMime: String = "",
+    val isHevcSource: Boolean = false
 )
