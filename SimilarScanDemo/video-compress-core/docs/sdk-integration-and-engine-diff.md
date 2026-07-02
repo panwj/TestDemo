@@ -173,7 +173,7 @@ task.cancel()
 
 ### 7.2 队列任务
 
-如果需要压缩多个视频，推荐使用 SDK 队列：
+如果已经一次性拿到了多个待压缩视频，推荐使用 SDK 队列：
 
 ```kotlin
 val queueTask = client.compressQueue(
@@ -220,6 +220,14 @@ queueTask.cancel()
 - 适合驱动批量压缩页、前台服务和通知。
 - 队列是内存级顺序队列，不负责崩溃后的任务恢复。
 
+如果业务场景是“用户已经开始压缩 A，又继续选择 B、C 加入压缩”，推荐由业务层维护可追加队列：
+
+- 业务层使用 `ForegroundService` 保存等待队列。
+- 正在压缩的任务继续执行，不中断。
+- 新任务追加到等待队列尾部。
+- 当前任务结束后，业务层取出下一条并调用 SDK 单任务 `compress()`。
+- 这样可以让队列总数动态增长，同时保持 SDK 核心能力简单稳定。
+
 ## 8. 长视频前台服务建议
 
 长视频压缩建议由业务层使用前台服务承载。
@@ -233,7 +241,7 @@ queueTask.cancel()
 
 推荐边界：
 
-- SDK：提供 `compressQueue()`、进度、成功、失败、取消。
+- SDK：提供单任务 `compress()`、固定列表队列 `compressQueue()`、进度、成功、失败、取消。
 - App/Demo：实现 `ForegroundService`、通知渠道、通知进度、取消按钮。
 
 Demo 中的实现：
@@ -245,8 +253,11 @@ com.example.similarscandemo.compress.VideoCompressForegroundService
 该服务会：
 
 - 启动前台通知。
-- 调用 SDK `compressQueue()`。
+- 在业务层维护可追加顺序队列。
+- 当前任务完成后再启动下一条，底层逐个调用 SDK `compress()`。
 - 将进度更新到通知。
+- 通知栏进度条表示整个队列总进度。
+- 通知栏文案中的 `Current` 表示当前单个任务进度，`Queue` 表示整个队列总进度。
 - 通过应用内广播通知页面刷新。
 - 将失败原因回传给页面，方便用户和测试人员判断是 HDR 拦截、HEVC 转码失败、保存失败还是结果校验失败。
 - 支持通知栏取消。

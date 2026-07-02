@@ -39,7 +39,7 @@ class VideoCompressionQuotaStore(context: Context) {
     }
 
     companion object {
-        const val FREE_LIMIT = 2
+        const val FREE_LIMIT = 10
         private const val KEY_DAY = "day"
         private const val KEY_USED = "used"
     }

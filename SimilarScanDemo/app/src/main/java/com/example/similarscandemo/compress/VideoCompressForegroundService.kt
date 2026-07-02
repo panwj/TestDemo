@@ -6,13 +6,13 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
-import com.clean.videocompress.api.VideoCompressQueueFailure
-import com.clean.videocompress.api.VideoCompressQueueObserver
-import com.clean.videocompress.api.VideoCompressQueueTask
 import com.clean.videocompress.api.VideoCompressClient
+import com.clean.videocompress.api.VideoCompressObserver
 import com.clean.videocompress.api.VideoCompressSdk
+import com.clean.videocompress.api.VideoCompressTask
 import com.clean.videocompress.api.model.CompressVideoAsset
 import com.clean.videocompress.api.model.VideoCompressError
 import com.clean.videocompress.api.model.VideoCompressPermissionOperation
@@ -22,18 +22,29 @@ import com.clean.videocompress.api.model.VideoCompressProgress
 import com.clean.videocompress.api.model.VideoCompressRequest
 import com.clean.videocompress.api.model.VideoCompressResult
 import com.example.similarscandemo.util.FormatUtils
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.ArrayDeque
 
 /**
  * 长视频压缩前台服务。
  *
  * 压缩可能持续较久，放在前台服务中可以降低切后台后被系统中断的风险。
- * 服务本身只承载 Demo 业务通知，真正的任务队列由 video-compress-core 提供。
+ *
+ * 这里由 Demo 业务层维护一个“可追加”的顺序队列：
+ * - SDK 仍只负责单个视频的压缩、进度、成功、失败和取消。
+ * - ForegroundService 负责把多次点击追加到同一个队列中，并按顺序启动下一条。
+ * - 通知栏进度条表示整个队列的总进度，文案中的 Current 表示当前单个视频进度。
  */
 class VideoCompressForegroundService : Service() {
-    private val running = AtomicBoolean(false)
+    private val pendingRequests = ArrayDeque<VideoCompressRequest>()
     private var client: VideoCompressClient? = null
-    private var queueTask: VideoCompressQueueTask? = null
+    private var activeTask: VideoCompressTask? = null
+    private var activeRequest: VideoCompressRequest? = null
+    private var foregroundStarted = false
+    private var cancellingAll = false
+    private var lastStartId = 0
+    private var totalCount = 0
+    private var finishedCount = 0
+    private var currentPercent = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -41,92 +52,143 @@ class VideoCompressForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
         if (intent?.action == ACTION_CANCEL) {
-            queueTask?.cancel()
-            stopSelf()
+            cancelAll(startId)
             return START_NOT_STICKY
         }
-        if (!running.compareAndSet(false, true)) return START_NOT_STICKY
         val asset = VideoAssetIntent.get(intent ?: Intent()) ?: run {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        val option = readOption(intent)
-        startForeground(NOTIFICATION_ID, notification("Preparing compression", 0, 0, 1))
-        client = VideoCompressSdk.create(applicationContext)
-        queueTask = client?.compressQueue(
-            listOf(VideoCompressRequest(asset, option)),
-            object : VideoCompressQueueObserver {
-                override fun onQueueStart(totalCount: Int) {
-                    sendProgress(ACTION_STARTED, asset, 0, "Preparing compression")
-                }
-
-                override fun onItemStart(index: Int, totalCount: Int, asset: CompressVideoAsset) {
-                    updateNotification("Compressing ${asset.displayName}", 0, index, totalCount)
-                    sendProgress(ACTION_PROGRESS, asset, 0, "Preparing compression")
-                }
-
-                override fun onItemProgress(index: Int, totalCount: Int, progress: VideoCompressProgress) {
-                    val message = progress.stage.name.lowercase().replace('_', ' ')
-                    updateNotification(message, progress.percent, index, totalCount)
-                    sendProgress(ACTION_PROGRESS, asset, progress.percent, message)
-                }
-
-                override fun onItemSuccess(index: Int, totalCount: Int, result: VideoCompressResult) {
-                    updateNotification("Compression complete", 100, index, totalCount)
-                    sendSuccess(result)
-                }
-
-                override fun onItemFailure(
-                    index: Int,
-                    totalCount: Int,
-                    request: VideoCompressRequest,
-                    error: VideoCompressError
-                ) {
-                    val message = readableErrorMessage(error)
-                    updateNotification(message, 100, index, totalCount)
-                    sendFailure(request.asset.id, message)
-                }
-
-                override fun onQueueComplete(
-                    results: List<VideoCompressResult>,
-                    failures: List<VideoCompressQueueFailure>
-                ) {
-                    finishService(startId)
-                }
-
-                override fun onQueueCancelled(
-                    results: List<VideoCompressResult>,
-                    failures: List<VideoCompressQueueFailure>
-                ) {
-                    sendFailure(asset.id, "Compression cancelled")
-                    finishService(startId)
-                }
-            }
-        )
+        pendingRequests.add(VideoCompressRequest(asset, readOption(intent)))
+        totalCount += 1
+        ensureForegroundStarted()
+        updateNotification("Queued ${asset.displayName}")
+        startNextIfIdle()
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        queueTask?.cancel()
+        activeTask?.cancel()
         client?.close()
         client = null
-        running.set(false)
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun ensureForegroundStarted() {
+        if (foregroundStarted) return
+        startForeground(NOTIFICATION_ID, notification("Queued compression task"))
+        foregroundStarted = true
+    }
+
+    private fun ensureClient(): VideoCompressClient {
+        val current = client
+        if (current != null) return current
+        return VideoCompressSdk.create(applicationContext).also {
+            client = it
+        }
+    }
+
+    private fun startNextIfIdle() {
+        if (activeTask != null) return
+        val request = pendingRequests.pollFirst() ?: run {
+            finishService(lastStartId)
+            return
+        }
+        cancellingAll = false
+        activeRequest = request
+        currentPercent = 0
+        updateNotification("Preparing ${request.asset.displayName}")
+        activeTask = ensureClient().compress(
+            request,
+            object : VideoCompressObserver {
+                override fun onStart(asset: CompressVideoAsset) {
+                    if (!isActiveAsset(asset.id)) return
+                    currentPercent = 0
+                    updateNotification("Preparing ${asset.displayName}")
+                    sendProgress(ACTION_STARTED, asset, 0, "Preparing compression")
+                }
+
+                override fun onProgress(progress: VideoCompressProgress) {
+                    val requestAsset = activeRequest?.asset ?: return
+                    currentPercent = progress.percent.coerceIn(0, 100)
+                    val message = progress.stage.name.lowercase().replace('_', ' ')
+                    updateNotification(message)
+                    sendProgress(ACTION_PROGRESS, requestAsset, currentPercent, message)
+                }
+
+                override fun onSuccess(result: VideoCompressResult) {
+                    if (!isActiveAsset(result.sourceAsset.id)) return
+                    currentPercent = 100
+                    finishedCount += 1
+                    updateNotification("Compression complete")
+                    sendSuccess(result)
+                    completeActiveTask()
+                }
+
+                override fun onFailure(error: VideoCompressError) {
+                    val requestAsset = activeRequest?.asset ?: return
+                    currentPercent = 100
+                    finishedCount += 1
+                    val message = readableErrorMessage(error)
+                    updateNotification(message)
+                    sendFailure(requestAsset.id, message)
+                    completeActiveTask()
+                }
+
+                override fun onCancelled(assetId: Long) {
+                    if (cancellingAll || !isActiveAsset(assetId)) return
+                    val requestAsset = activeRequest?.asset ?: return
+                    currentPercent = 100
+                    finishedCount += 1
+                    sendFailure(requestAsset.id, "Compression cancelled")
+                    completeActiveTask()
+                }
+            }
+        )
+    }
+
+    private fun completeActiveTask() {
+        activeTask = null
+        activeRequest = null
+        currentPercent = 0
+        startNextIfIdle()
+    }
+
+    private fun isActiveAsset(assetId: Long): Boolean {
+        return activeRequest?.asset?.id == assetId
+    }
+
+    private fun cancelAll(startId: Int) {
+        cancellingAll = true
+        activeRequest?.asset?.id?.let { sendFailure(it, "Compression cancelled") }
+        while (pendingRequests.isNotEmpty()) {
+            val pending = pendingRequests.pollFirst() ?: break
+            sendFailure(pending.asset.id, "Compression cancelled")
+        }
+        activeTask?.cancel()
+        finishService(startId)
+    }
+
     private fun finishService(startId: Int) {
-        running.set(false)
+        pendingRequests.clear()
+        activeTask = null
+        activeRequest = null
+        totalCount = 0
+        finishedCount = 0
+        currentPercent = 0
         client?.close()
         client = null
-        if (Build.VERSION.SDK_INT >= 24) {
+        if (foregroundStarted && Build.VERSION.SDK_INT >= 24) {
             stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
+        } else if (foregroundStarted) {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
+        foregroundStarted = false
         stopSelf(startId)
     }
 
@@ -194,12 +256,12 @@ class VideoCompressForegroundService : Service() {
         }
     }
 
-    private fun updateNotification(message: String, percent: Int, index: Int, total: Int) {
+    private fun updateNotification(message: String) {
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, notification(message, percent, index, total))
+            .notify(NOTIFICATION_ID, notification(message))
     }
 
-    private fun notification(message: String, percent: Int, index: Int, total: Int): Notification {
+    private fun notification(message: String): Notification {
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
@@ -218,21 +280,45 @@ class VideoCompressForegroundService : Service() {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
-        val title = if (total > 1) {
-            "Compressing video $index of $total"
+        val currentIndex = currentQueueIndex()
+        val queuePercent = queuePercent()
+        val title = if (totalCount > 1 && activeRequest != null) {
+            "Compressing video $currentIndex of $totalCount"
+        } else if (totalCount > 1) {
+            "Video compression queue"
         } else {
             "Compressing video"
         }
+        val progressText =
+            "Finished $finishedCount/$totalCount · Current ${currentPercent.coerceIn(0, 100)}% · Queue $queuePercent%"
+        val contentText = "$message · $progressText"
+        val cancelAction = Notification.Action.Builder(
+            Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+            "Cancel",
+            cancelIntent
+        ).build()
         return builder
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle(title)
-            .setContentText("$message · $percent%")
+            .setContentText(contentText)
+            .setStyle(Notification.BigTextStyle().bigText(contentText))
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .setProgress(100, percent.coerceIn(0, 100), percent <= 0)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancel", cancelIntent)
+            .setProgress(100, queuePercent, totalCount <= 0)
+            .addAction(cancelAction)
             .build()
+    }
+
+    private fun currentQueueIndex(): Int {
+        if (totalCount <= 0) return 0
+        return (finishedCount + 1).coerceAtMost(totalCount)
+    }
+
+    private fun queuePercent(): Int {
+        if (totalCount <= 0) return 0
+        val activeProgress = if (activeRequest == null) 0 else currentPercent.coerceIn(0, 100)
+        return ((finishedCount * 100 + activeProgress) / totalCount).coerceIn(0, 100)
     }
 
     private fun createNotificationChannel() {
