@@ -9,9 +9,11 @@ import com.clean.videocompress.api.model.CompressVideoAsset
 /**
  * 压缩前的视频格式探测器。
  *
- * 只读取 MediaFormat 元数据，不做解码，成本较低。当前用于识别 HEVC 与 HDR：
+ * 只读取 MediaFormat 元数据，不做解码，成本较低。当前用于识别 HEVC、HDR、
+ * 真实码率、帧率和旋转信息：
  * - HEVC：允许 Media3 转 H.264。
  * - HDR：默认拦截，避免输出偏色、灰蒙或过曝。
+ * - bitrate / frameRate：只在真正压缩当前视频时读取，避免拖慢列表页。
  */
 internal class VideoFormatInspector(private val context: Context) {
     fun inspect(asset: CompressVideoAsset): VideoFormatProfile {
@@ -28,7 +30,12 @@ internal class VideoFormatInspector(private val context: Context) {
                         videoMime = mime,
                         isHevc = mime.equals("video/hevc", ignoreCase = true) ||
                             mime.equals("video/h265", ignoreCase = true),
-                        isHdr = isHdr(format)
+                        isHdr = isHdr(format),
+                        bitrate = readInt(format, MediaFormat.KEY_BIT_RATE),
+                        frameRate = readInt(format, MediaFormat.KEY_FRAME_RATE),
+                        width = readInt(format, MediaFormat.KEY_WIDTH),
+                        height = readInt(format, MediaFormat.KEY_HEIGHT),
+                        rotationDegrees = readInt(format, ROTATION_DEGREES)
                     )
                 }
             }
@@ -56,10 +63,27 @@ internal class VideoFormatInspector(private val context: Context) {
             transfer == MediaFormat.COLOR_TRANSFER_HLG ||
             standard == MediaFormat.COLOR_STANDARD_BT2020
     }
+
+    private fun readInt(format: MediaFormat, key: String): Int {
+        return try {
+            if (format.containsKey(key)) format.getInteger(key) else 0
+        } catch (_: Throwable) {
+            0
+        }
+    }
+
+    private companion object {
+        const val ROTATION_DEGREES = "rotation-degrees"
+    }
 }
 
 internal data class VideoFormatProfile(
     val videoMime: String = "",
     val isHevc: Boolean = false,
-    val isHdr: Boolean = false
+    val isHdr: Boolean = false,
+    val bitrate: Int = 0,
+    val frameRate: Int = 0,
+    val width: Int = 0,
+    val height: Int = 0,
+    val rotationDegrees: Int = 0
 )

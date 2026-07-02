@@ -170,14 +170,30 @@ estimatedSaving = videoSize * mediumCompressionRate
 
 ```text
 sourceBitrate = metadataBitrate ?: fileSize * 8 / duration
-targetBitrate = sourceBitrate * (100 - compressionRatePercent) / 100
+baseTargetBitrate = sourceBitrate * (100 - compressionRatePercent) / 100
 ```
 
-最低码率保护：
+压缩开始前，SDK 会针对当前视频读取真实 metadata：
 
 ```text
-targetBitrate >= 350_000
+bitrate / frameRate / width / height / rotation / mime / color info
 ```
+
+最终目标码率会结合分辨率、帧率、HEVC 来源做质量保护：
+
+```text
+targetBitrate = clamp(baseTargetBitrate, qualityFloor, sourceBitrate * 0.92)
+```
+
+当前质量保护下限：
+
+- 4K 来源：6 Mbps。
+- 1080p：4.5 Mbps。
+- 720p：2.5 Mbps。
+- 540p：1.4 Mbps。
+- 低于 540p：800 Kbps。
+- 45fps / 60fps 高帧率会继续提高下限。
+- HEVC 转 H.264 会继续提高下限。
 
 ## 7. 压缩引擎
 
@@ -196,7 +212,9 @@ com.clean.videocompress.internal.engine.media3.Media3VideoCompressEngine
 - 使用 `Transformer` 执行转码。
 - 输出视频 mime type 为 `video/avc`。
 - 使用 `DefaultEncoderFactory` 配置目标 `VideoEncoderSettings`。
-- 根据用户选择的档位设置目标 bitrate。
+- 根据用户选择的档位、真实 bitrate、分辨率、帧率、HEVC 来源设置目标 bitrate。
+- 高分辨率视频会按策略降分辨率。
+- 高帧率视频会提高质量保护，避免压缩后运动画面明显劣化。
 - 设置关键帧间隔为 3 秒。
 - 通过 `Transformer.getProgress()` 定时查询压缩进度。
 - 完成后保存到系统 `MediaStore.Video`。
@@ -206,15 +224,11 @@ com.clean.videocompress.internal.engine.media3.Media3VideoCompressEngine
 - 作为产品默认生产方案。
 - 适合优先用于正式业务路径。
 - 三档压缩配置已经能影响目标 bitrate 和输出体积。
-
-后续可继续优化点：
-
-- 根据设备能力动态选择 H.264 profile/level，提升兼容性和画质稳定性。
-- 对超高分辨率视频增加可配置分辨率降档，例如 4K 转 1080p。
-- 增加压缩前空间预估校准，用历史压缩结果修正“预计节省空间”。
-- 对短视频、低码率视频增加“不建议压缩”判断，避免压缩后体积收益很小。
-- 增加后台压缩通知和前台服务，避免长视频压缩被系统中断。
-- 增加压缩结果质量抽检，例如输出文件可播放、时长接近原视频、大小确实降低。
+- 已支持压缩前真实 metadata 读取。
+- 已支持低收益、短视频、低码率、HDR 拦截。
+- 已支持磁盘空间预检查。
+- 已支持前台服务承载长视频压缩。
+- 已保持单任务顺序队列，不做并发压缩，降低硬件编码器资源抢占风险。
 
 ### 7.2 备用引擎：Native Codec
 

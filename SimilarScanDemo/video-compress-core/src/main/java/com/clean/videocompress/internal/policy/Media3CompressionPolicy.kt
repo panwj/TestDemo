@@ -18,11 +18,37 @@ internal object Media3CompressionPolicy {
         option: VideoCompressOption,
         profile: VideoFormatProfile = VideoFormatProfile()
     ): Media3CompressionPlan {
-        val sourceBitrate = BitrateCalculator.sourceBitrate(asset)
-        val dynamicRate = dynamicCompressionRate(asset, option, sourceBitrate)
-        val targetBitrate = BitrateCalculator.targetBitrate(asset, dynamicRate)
-        val targetHeight = targetHeight(asset)
-        val estimatedOutputSize = estimateOutputSize(asset, sourceBitrate, targetBitrate, targetHeight)
+        val sourceBitrate = sourceBitrate(asset, profile)
+        val sourceWidth = sourceWidth(asset, profile)
+        val sourceHeight = sourceHeight(asset, profile)
+        val sourceFrameRate = sourceFrameRate(profile)
+        val dynamicRate = dynamicCompressionRate(
+            asset = asset,
+            option = option,
+            sourceBitrate = sourceBitrate,
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
+            sourceFrameRate = sourceFrameRate,
+            profile = profile
+        )
+        val targetHeight = targetHeight(sourceWidth, sourceHeight)
+        val targetBitrate = targetBitrate(
+            sourceBitrate = sourceBitrate,
+            compressionRatePercent = dynamicRate,
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
+            sourceFrameRate = sourceFrameRate,
+            targetHeight = targetHeight,
+            profile = profile
+        )
+        val estimatedOutputSize = estimateOutputSize(
+            asset = asset,
+            sourceBitrate = sourceBitrate,
+            targetBitrate = targetBitrate,
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
+            targetHeight = targetHeight
+        )
         val estimatedSaving = (asset.sizeBytes - estimatedOutputSize).coerceAtLeast(0L)
         val rejectReason = rejectReason(asset, sourceBitrate, estimatedSaving, profile)
         return Media3CompressionPlan(
@@ -34,7 +60,11 @@ internal object Media3CompressionPolicy {
             estimatedSavingBytes = estimatedSaving,
             rejectReason = rejectReason,
             sourceVideoMime = profile.videoMime,
-            isHevcSource = profile.isHevc
+            isHevcSource = profile.isHevc,
+            sourceFrameRate = sourceFrameRate,
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
+            isMeasuredMetadata = profile.bitrate > 0 || profile.frameRate > 0
         )
     }
 
@@ -75,20 +105,43 @@ internal object Media3CompressionPolicy {
     private fun dynamicCompressionRate(
         asset: CompressVideoAsset,
         option: VideoCompressOption,
-        sourceBitrate: Int
+        sourceBitrate: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        sourceFrameRate: Int,
+        profile: VideoFormatProfile
     ): Int {
         var rate = option.compressionRatePercent.coerceIn(10, 85)
-        val longEdge = max(asset.width, asset.height)
-        if (longEdge >= 3840) rate += 10
-        if (sourceBitrate > 12_000_000) rate += 10
-        if (sourceBitrate in 1..2_000_000) rate -= 15
+        val longEdge = max(sourceWidth, sourceHeight)
+        if (longEdge >= 3840) {
+            rate += 12
+        } else if (longEdge >= 2560) {
+            rate += 8
+        } else if (longEdge >= 1920) {
+            rate += 4
+        }
+        when {
+            sourceBitrate > 20_000_000 -> rate += 12
+            sourceBitrate > 12_000_000 -> rate += 8
+            sourceBitrate > 8_000_000 -> rate += 4
+            sourceBitrate in 1..2_500_000 -> rate -= 18
+            sourceBitrate in 2_500_001..4_000_000 -> rate -= 8
+        }
+        if (sourceFrameRate >= 60) {
+            rate -= 6
+        } else if (sourceFrameRate >= 45) {
+            rate -= 3
+        }
+        if (profile.isHevc) {
+            rate -= 5
+        }
         if (asset.durationMs in 1 until 10_000L) rate -= 10
         return rate.coerceIn(10, 85)
     }
 
-    private fun targetHeight(asset: CompressVideoAsset): Int? {
-        val longEdge = max(asset.width, asset.height)
-        val shortEdge = minOf(asset.width, asset.height)
+    private fun targetHeight(sourceWidth: Int, sourceHeight: Int): Int? {
+        val longEdge = max(sourceWidth, sourceHeight)
+        val shortEdge = minOf(sourceWidth, sourceHeight)
         return when {
             longEdge >= 3840 && shortEdge > 1080 -> 1080
             longEdge >= 2560 && shortEdge > 1080 -> 1080
@@ -97,10 +150,83 @@ internal object Media3CompressionPolicy {
         }
     }
 
+    private fun sourceBitrate(asset: CompressVideoAsset, profile: VideoFormatProfile): Int {
+        return if (profile.bitrate > 0) profile.bitrate else BitrateCalculator.sourceBitrate(asset)
+    }
+
+    private fun sourceFrameRate(profile: VideoFormatProfile): Int {
+        return profile.frameRate.takeIf { it in 1..MAX_REASONABLE_FRAME_RATE } ?: DEFAULT_FRAME_RATE
+    }
+
+    private fun sourceWidth(asset: CompressVideoAsset, profile: VideoFormatProfile): Int {
+        val width = profile.width.takeIf { it > 0 } ?: asset.width
+        val height = profile.height.takeIf { it > 0 } ?: asset.height
+        return if (profile.rotationDegrees % 180 != 0) height else width
+    }
+
+    private fun sourceHeight(asset: CompressVideoAsset, profile: VideoFormatProfile): Int {
+        val width = profile.width.takeIf { it > 0 } ?: asset.width
+        val height = profile.height.takeIf { it > 0 } ?: asset.height
+        return if (profile.rotationDegrees % 180 != 0) width else height
+    }
+
+    private fun targetBitrate(
+        sourceBitrate: Int,
+        compressionRatePercent: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        sourceFrameRate: Int,
+        targetHeight: Int?,
+        profile: VideoFormatProfile
+    ): Int {
+        val keepRatio = (100 - compressionRatePercent.coerceIn(0, 95)) / 100f
+        val requested = (sourceBitrate * keepRatio).toInt().coerceAtLeast(MIN_TARGET_BITRATE)
+        val floor = qualityBitrateFloor(
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
+            sourceFrameRate = sourceFrameRate,
+            targetHeight = targetHeight,
+            isHevcSource = profile.isHevc
+        )
+        val maxTarget = (sourceBitrate * MAX_TARGET_BITRATE_RATIO).toInt()
+            .coerceAtLeast(MIN_TARGET_BITRATE)
+        val boundedFloor = floor.coerceAtMost(maxTarget)
+        return requested.coerceIn(boundedFloor, maxTarget)
+    }
+
+    private fun qualityBitrateFloor(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        sourceFrameRate: Int,
+        targetHeight: Int?,
+        isHevcSource: Boolean
+    ): Int {
+        val sourceLongEdge = max(sourceWidth, sourceHeight)
+        val outputShortEdge = targetHeight ?: minOf(sourceWidth, sourceHeight).coerceAtLeast(1)
+        var floor = when {
+            sourceLongEdge >= 3840 -> BITRATE_FLOOR_4K_SOURCE
+            outputShortEdge >= 1080 -> BITRATE_FLOOR_1080P
+            outputShortEdge >= 720 -> BITRATE_FLOOR_720P
+            outputShortEdge >= 540 -> BITRATE_FLOOR_540P
+            else -> BITRATE_FLOOR_LOW_RESOLUTION
+        }
+        if (sourceFrameRate >= 60) {
+            floor = (floor * 1.35f).toInt()
+        } else if (sourceFrameRate >= 45) {
+            floor = (floor * 1.18f).toInt()
+        }
+        if (isHevcSource) {
+            floor = (floor * 1.15f).toInt()
+        }
+        return floor.coerceAtLeast(MIN_TARGET_BITRATE)
+    }
+
     private fun estimateOutputSize(
         asset: CompressVideoAsset,
         sourceBitrate: Int,
         targetBitrate: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
         targetHeight: Int?
     ): Long {
         val bitrateRatio = if (sourceBitrate > 0) {
@@ -109,7 +235,7 @@ internal object Media3CompressionPolicy {
             1.0
         }
         val scaleRatio = if (targetHeight != null) {
-            val shortEdge = minOf(asset.width, asset.height).coerceAtLeast(1)
+            val shortEdge = minOf(sourceWidth, sourceHeight).coerceAtLeast(1)
             (targetHeight.toDouble() / shortEdge.toDouble()).coerceAtMost(1.0)
         } else {
             1.0
@@ -122,6 +248,15 @@ internal object Media3CompressionPolicy {
     private const val MIN_SOURCE_SIZE_BYTES = 3L * 1024L * 1024L
     private const val MIN_ESTIMATED_SAVING_BYTES = 1L * 1024L * 1024L
     private const val MAX_OUTPUT_SIZE_RATIO = 0.98
+    private const val MIN_TARGET_BITRATE = 350_000
+    private const val MAX_TARGET_BITRATE_RATIO = 0.92f
+    private const val DEFAULT_FRAME_RATE = 30
+    private const val MAX_REASONABLE_FRAME_RATE = 240
+    private const val BITRATE_FLOOR_4K_SOURCE = 6_000_000
+    private const val BITRATE_FLOOR_1080P = 4_500_000
+    private const val BITRATE_FLOOR_720P = 2_500_000
+    private const val BITRATE_FLOOR_540P = 1_400_000
+    private const val BITRATE_FLOOR_LOW_RESOLUTION = 800_000
 }
 
 internal data class Media3CompressionPlan(
@@ -133,5 +268,9 @@ internal data class Media3CompressionPlan(
     val estimatedSavingBytes: Long,
     val rejectReason: String?,
     val sourceVideoMime: String = "",
-    val isHevcSource: Boolean = false
+    val isHevcSource: Boolean = false,
+    val sourceFrameRate: Int = 30,
+    val sourceWidth: Int = 0,
+    val sourceHeight: Int = 0,
+    val isMeasuredMetadata: Boolean = false
 )
