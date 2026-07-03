@@ -117,6 +117,8 @@ val result = client.scan(
 val categories = client.loadProductCategories()
 ```
 
+`loadProductCategories()` 会返回分类下完整资源；首页预览展示几张图片由业务 UI 自行控制。
+
 读取原始分组：
 
 ```kotlin

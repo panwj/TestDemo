@@ -19,6 +19,7 @@ import com.clean.similarscan.api.model.ProductCategoryType
 import com.example.similarscandemo.service.MediaScanService
 import com.clean.similarscan.api.SimilarScanClient
 import com.clean.similarscan.api.SimilarScanSdk
+import com.example.similarscandemo.ui.MediaDisplaySorter
 import kotlin.math.abs
 
 /**
@@ -124,7 +125,7 @@ class ImagePreviewActivity : Activity() {
         } else {
             category.groups.firstOrNull()
         }
-        val latest = group?.assets.orEmpty()
+        val latest = MediaDisplaySorter.newestFirst(group?.assets.orEmpty())
         if (latest.isEmpty()) {
             finish()
             return

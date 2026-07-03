@@ -22,7 +22,7 @@ interface SimilarScanClient : Closeable {
     /** 查询底层相似/相同分组，主要用于诊断或内部适配。 */
     fun loadGroups(limit: Int = Int.MAX_VALUE): List<SimilarGroup>
 
-    /** 查询产品首页分类结果，宿主 UI 优先使用该接口，不直接拼装数据库分组。 */
+    /** 查询产品分类结果，宿主 UI 优先使用该接口，不直接拼装数据库分组。 */
     fun loadProductCategories(limit: Int = Int.MAX_VALUE): List<ProductCategory>
 
     /** 为预览/列表加载媒体缩略图；扫描指纹 Bitmap 加载仍在核心扫描内部完成。 */

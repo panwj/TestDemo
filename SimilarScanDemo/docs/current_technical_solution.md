@@ -496,18 +496,17 @@ ui/ThumbLoader.kt
 
 异步解码并使用 LruCache，避免 ListView 滑动时同步解码 bitmap。
 
-Other 分类可能包含大量资源。当前首页只加载最多 `120` 个资源作为预览，真实数量和大小通过 SQL 聚合：
+Other 分类可能包含大量资源。当前 SDK 会返回完整资源集合，Demo 业务 UI 统一按媒体时间倒序展示：
 
 ```text
-COUNT(*)
-SUM(size)
+mediaTime = max(createdAt, dateAdded)
+mediaTime DESC, dateAdded DESC, id DESC
 ```
 
-这可以避免 `CursorWindow` 因一次性读取上千行资源而崩溃。
+首页预览由业务层控制，只取分类资源中的前 2 张作为预览图；分类数量和详情页列表都使用完整资源集合。
 
 ## 17. 当前已知边界
 
 - 系统相册外部删除资源后，若下一次只触发增量扫描，旧记录可能保留到下一次全量扫描。
 - 视频指纹只接受 DATA 真实路径，路径不可读时会得到无效指纹。
 - 视频指纹抽帧时间单位按当前代码记录为毫秒口径，后续如继续对齐竞品，应结合导出的逐帧时间和 hash 再确认。
-- 首页 Other 分类只加载预览资源；若要在详情页展示超大 Other 分类，后续应继续做分页加载。

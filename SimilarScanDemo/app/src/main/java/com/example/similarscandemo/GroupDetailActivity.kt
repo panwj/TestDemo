@@ -1,7 +1,6 @@
 package com.example.similarscandemo
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -29,6 +28,7 @@ import com.clean.similarscan.api.SimilarScanClient
 import com.clean.similarscan.api.SimilarScanSdk
 import com.example.similarscandemo.ui.GroupAdapter
 import com.example.similarscandemo.ui.GridAdapter
+import com.example.similarscandemo.ui.MediaDisplaySorter
 import com.example.similarscandemo.util.FormatUtils
 import com.example.similarscandemo.util.DeleteOperationStore
 import java.util.concurrent.Executors
@@ -53,7 +53,6 @@ class GroupDetailActivity : Activity() {
     private val selectedUris = linkedSetOf<String>()
     private val bestUris = linkedSetOf<String>()
     private val pendingDeleteUris = linkedSetOf<String>()
-    private var sortMode = SortMode.NEWEST
     private var selectionInitialized = false
     private var receiverRegistered = false
     private var gridLayoutInitialized = false
@@ -95,8 +94,8 @@ class GroupDetailActivity : Activity() {
         groupRecycler.layoutManager = LinearLayoutManager(this)
 
         selectAllButton.setOnClickListener { toggleSelectAll() }
-        sortButton.setOnClickListener { showSortDialog() }
-        sortButton.text = sortMode.shortLabel
+        sortButton.text = "Newest"
+        sortButton.visibility = View.GONE
         deleteButton.setOnClickListener { requestDeleteSelected() }
         deleteButton.isEnabled = false
         deleteButton.alpha = 0.45f
@@ -236,7 +235,7 @@ class GroupDetailActivity : Activity() {
             groupRecycler.visibility = View.VISIBLE
             groupAdapter?.submitList(displayedGroups)
         } else {
-            val sortedAssets = sortAssets(category.assets)
+            val sortedAssets = MediaDisplaySorter.newestFirst(category.assets)
             if (!gridLayoutInitialized) {
                 val spacing = (8 * resources.displayMetrics.density).toInt()
                 groupRecycler.layoutManager = GridLayoutManager(this, 2)
@@ -250,15 +249,11 @@ class GroupDetailActivity : Activity() {
                     activity = this,
                     selectedUris = selectedUris,
                     onItemClick = { asset ->
-                        val tempGroup = SimilarGroup(
-                            id = 0,
-                            title = categoryType.title,
-                            subtitle = "",
-                            category = com.clean.similarscan.api.model.GroupCategory.SIMILAR,
-                            kind = com.clean.similarscan.api.model.MediaKind.PHOTO,
-                            assets = sortedAssets
+                        val currentAssets = MediaDisplaySorter.newestFirst(category.assets)
+                        openPreviewFromFlatList(
+                            currentAssets,
+                            currentAssets.indexOfFirst { it.uri == asset.uri }
                         )
-                        openPreview(tempGroup, sortedAssets.indexOf(asset))
                     },
                     onSelectionToggle = { asset, position ->
                         toggleAsset(asset, position)
@@ -271,82 +266,8 @@ class GroupDetailActivity : Activity() {
         updateSelectionControls()
     }
 
-    private fun showSortDialog() {
-        if (!::category.isInitialized) return
-        val modes = SortMode.entries
-        AlertDialog.Builder(this)
-            .setTitle("Sort media")
-            .setSingleChoiceItems(
-                modes.map { it.label }.toTypedArray(),
-                sortMode.ordinal
-            ) { dialog, which ->
-                sortMode = modes[which]
-                sortButton.text = sortMode.shortLabel
-                dialog.dismiss()
-                renderContent()
-            }
-            .show()
-    }
-
     private fun sortedGroups(): List<SimilarGroup> {
-        return category.groups
-            .map { it.copy(assets = sortAssets(it.assets, keepBestFirst = true)) }
-            .sortedByDescending { group ->
-                when (sortMode) {
-                    SortMode.RECOMMENDED -> group.assets.maxOfOrNull { it.qualityScore } ?: 0.0
-                    SortMode.NEWEST ->
-                        (group.assets.maxOfOrNull { mediaTimeKey(it) } ?: 0L).toDouble()
-                    SortMode.OLDEST ->
-                        -(group.assets.minOfOrNull { mediaTimeKey(it) } ?: 0L).toDouble()
-                    SortMode.LARGEST -> group.assets.sumOf { it.size }.toDouble()
-                    SortMode.SMALLEST -> -group.assets.sumOf { it.size }.toDouble()
-                }
-            }
-    }
-
-    private fun sortAssets(
-        assets: List<MediaAsset>,
-        keepBestFirst: Boolean = false
-    ): List<MediaAsset> {
-        val sorted = when (sortMode) {
-            SortMode.RECOMMENDED -> assets.sortedWith(
-                compareByDescending<MediaAsset> { it.qualityScore }
-                    .thenByDescending { it.isFavorite }
-                    .thenByDescending { it.isEdited }
-                    .thenByDescending { it.width.toLong() * it.height.toLong() }
-            )
-            /*
-             * 默认展示顺序使用媒体资源时间倒序。createdAt 是当前项目统一后的媒体时间，
-             * dateAdded/id 作为兜底，保证同一时间戳下顺序稳定。
-             */
-            SortMode.NEWEST -> assets.sortedWith(
-                compareByDescending<MediaAsset> { it.createdAt.time }
-                    .thenByDescending { it.dateAdded }
-                    .thenByDescending { it.id }
-            )
-            SortMode.OLDEST -> assets.sortedWith(
-                compareBy<MediaAsset> { it.createdAt.time }
-                    .thenBy { it.dateAdded }
-                    .thenBy { it.id }
-            )
-            SortMode.LARGEST -> assets.sortedByDescending { it.size }
-            SortMode.SMALLEST -> assets.sortedBy { it.size }
-        }
-        if (!keepBestFirst || sorted.size < 2) return sorted
-
-        /*
-         * 相似/重复组中 Best 是推荐保留项。无论当前展示按时间还是大小排序，
-         * Best 都固定放在第一位，剩余资源再按当前排序规则展示。
-         */
-        val bestUri = assets.firstOrNull { bestUris.contains(it.uri.toString()) }
-            ?.uri
-            ?.toString()
-            ?: return sorted
-        return sorted.sortedBy { if (it.uri.toString() == bestUri) 0 else 1 }
-    }
-
-    private fun mediaTimeKey(asset: MediaAsset): Long {
-        return maxOf(asset.createdAt.time, asset.dateAdded * 1000L)
+        return MediaDisplaySorter.newestGroupFirst(category.groups)
     }
 
     private fun toggleAsset(asset: MediaAsset, position: Int = -1) {
@@ -503,13 +424,5 @@ class GroupDetailActivity : Activity() {
             registerReceiver(scanReceiver, filter)
         }
         receiverRegistered = true
-    }
-
-    private enum class SortMode(val label: String, val shortLabel: String) {
-        RECOMMENDED("Recommended quality", "Best"),
-        NEWEST("Newest first", "Newest"),
-        OLDEST("Oldest first", "Oldest"),
-        LARGEST("Largest first", "Largest"),
-        SMALLEST("Smallest first", "Smallest")
     }
 }

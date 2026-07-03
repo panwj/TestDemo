@@ -1345,7 +1345,16 @@ internal class ScanDatabase(context: Context) {
             "Other Photos",
             MediaKind.PHOTO,
             listOf(MediaKind.PHOTO),
-            setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE)
+            setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
+            chatFilter = ChatFilter.NON_CHAT
+        )
+        addOtherGroup(
+            result,
+            "Chat Photos",
+            MediaKind.PHOTO,
+            listOf(MediaKind.PHOTO),
+            setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
+            chatFilter = ChatFilter.CHAT_ONLY
         )
         addOtherGroup(
             result,
@@ -1376,17 +1385,19 @@ internal class ScanDatabase(context: Context) {
         title: String,
         groupKind: MediaKind,
         kinds: List<MediaKind>,
-        excludedCategories: Set<GroupCategory>
+        excludedCategories: Set<GroupCategory>,
+        chatFilter: ChatFilter = ChatFilter.ANY
     ) {
         val stats = loadAssetStats(
             kinds = kinds,
-            excludedCategories = excludedCategories
+            excludedCategories = excludedCategories,
+            chatFilter = chatFilter
         )
         if (stats.count == 0) return
         val assets = loadAssets(
             kinds = kinds,
             excludedCategories = excludedCategories,
-            limit = OTHER_GROUP_PREVIEW_LIMIT
+            chatFilter = chatFilter
         )
         result += SimilarGroup(
             title = title,
@@ -1554,15 +1565,9 @@ internal class ScanDatabase(context: Context) {
     private fun loadAssets(
         kinds: List<MediaKind>,
         excludedCategories: Set<GroupCategory>,
-        limit: Int? = null
+        chatFilter: ChatFilter = ChatFilter.ANY
     ): List<MediaAsset> {
-        val (whereSql, args) = assetWhereClause(kinds, excludedCategories)
-        val limitSql = if (limit != null) "LIMIT ?" else ""
-        val queryArgs = if (limit != null) {
-            args + limit.toString()
-        } else {
-            args
-        }
+        val (whereSql, args) = assetWhereClause(kinds, excludedCategories, chatFilter)
         return readableDatabase.rawQuery(
             """
             SELECT a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
@@ -1572,10 +1577,9 @@ internal class ScanDatabase(context: Context) {
             FROM media_asset a
             LEFT JOIN fingerprint f ON f.asset_id = a.id
             WHERE $whereSql
-            ORDER BY a.created_at DESC
-            $limitSql
+            ORDER BY a.created_at DESC, a.date_added DESC, a.media_store_id DESC
             """.trimIndent(),
-            queryArgs.toTypedArray()
+            args.toTypedArray()
         ).use { cursor ->
             val assets = mutableListOf<MediaAsset>()
             while (cursor.moveToNext()) assets += assetFromCursor(cursor, 0, true)
@@ -1585,9 +1589,10 @@ internal class ScanDatabase(context: Context) {
 
     private fun loadAssetStats(
         kinds: List<MediaKind>,
-        excludedCategories: Set<GroupCategory>
+        excludedCategories: Set<GroupCategory>,
+        chatFilter: ChatFilter = ChatFilter.ANY
     ): AssetStats {
-        val (whereSql, args) = assetWhereClause(kinds, excludedCategories)
+        val (whereSql, args) = assetWhereClause(kinds, excludedCategories, chatFilter)
         return readableDatabase.rawQuery(
             """
             SELECT COUNT(*), COALESCE(SUM(a.size), 0)
@@ -1608,11 +1613,12 @@ internal class ScanDatabase(context: Context) {
     }
 
     /**
-     * Other 分类统计和预览共用同一段过滤条件，避免首页数量和实际列表口径不一致。
+     * Other 分类统计和资源列表共用同一段过滤条件，避免首页数量和详情列表口径不一致。
      */
     private fun assetWhereClause(
         kinds: List<MediaKind>,
-        excludedCategories: Set<GroupCategory>
+        excludedCategories: Set<GroupCategory>,
+        chatFilter: ChatFilter = ChatFilter.ANY
     ): Pair<String, List<String>> {
         val args = mutableListOf<String>()
         val placeholders = kinds.joinToString(",") {
@@ -1635,10 +1641,16 @@ internal class ScanDatabase(context: Context) {
         } else {
             ""
         }
+        val chatSql = when (chatFilter) {
+            ChatFilter.ANY -> ""
+            ChatFilter.CHAT_ONLY -> "AND a.chat_source IS NOT NULL"
+            ChatFilter.NON_CHAT -> "AND a.chat_source IS NULL"
+        }
         return """
             a.type IN ($placeholders)
               AND a.state='ACTIVE'
               $excludeSql
+              $chatSql
         """.trimIndent() to args
     }
 
@@ -1695,11 +1707,6 @@ internal class ScanDatabase(context: Context) {
     }
 
     companion object {
-        /*
-         * 首页只需要少量缩略图预览。Other 分类可能包含上千条资源，
-         * 如果一次性读入会撑爆 CursorWindow，并让扫描进度广播在主线程崩溃。
-         */
-        private const val OTHER_GROUP_PREVIEW_LIMIT = 120
         /*
          * v27 将图片指纹尺寸和视频指纹模式纳入 fingerprint_algorithm_version，支持 SDK
          * 请求侧配置 imageFingerprintSize/videoFingerprintMode；同时将 Duplicate SHA-256
@@ -1761,6 +1768,18 @@ private data class AssetStats(
     val count: Int,
     val totalSize: Long
 )
+
+/**
+ * Other Photos 需要进一步拆分普通图片和聊天图片。
+ *
+ * chat_source 在媒体枚举阶段由文件名、相册名和路径提示预计算并落库，
+ * 这里直接走 SQL 过滤，避免首页为了统计数量加载全部 Other 图片。
+ */
+private enum class ChatFilter {
+    ANY,
+    CHAT_ONLY,
+    NON_CHAT
+}
 
 data class HashIndexEntry(
     val assetId: Long,

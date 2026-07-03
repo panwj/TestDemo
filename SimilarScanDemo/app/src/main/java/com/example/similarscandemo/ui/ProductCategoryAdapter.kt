@@ -34,7 +34,7 @@ class ProductCategoryAdapter(
         val view = convertView ?: LayoutInflater.from(activity)
             .inflate(R.layout.item_product_category, parent, false)
         val category = getItem(position)
-        val assets = category.assets
+        val assets = MediaDisplaySorter.newestFirst(category.assets)
         val unit = when {
             assets.isEmpty() -> "Photos"
             assets.first().kind == MediaKind.VIDEO ||
@@ -50,7 +50,7 @@ class ProductCategoryAdapter(
         previewGrid.visibility = if (assets.isEmpty()) View.GONE else View.VISIBLE
         previewGrid.isEnabled = false
         previewGrid.isClickable = false
-        previewGrid.adapter = CategoryPreviewAdapter(activity, assets.take(3))
+        previewGrid.adapter = CategoryPreviewAdapter(activity, assets.take(PREVIEW_ASSET_COUNT))
 
         view.setOnClickListener {
             activity.startActivity(
@@ -59,5 +59,9 @@ class ProductCategoryAdapter(
             )
         }
         return view
+    }
+
+    companion object {
+        private const val PREVIEW_ASSET_COUNT = 2
     }
 }

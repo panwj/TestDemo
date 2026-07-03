@@ -14,8 +14,7 @@ data class SimilarGroup(
     val kind: MediaKind,
     val assets: List<MediaAsset>,
     /**
-     * 当前组的真实资源数量。首页 Other 分类只加载少量预览资源，
-     * 因此不能用 assets.size 作为统计口径。
+     * 当前组的真实资源数量。
      */
     val totalAssetCount: Int = assets.size,
     /**

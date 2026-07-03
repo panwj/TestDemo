@@ -10,7 +10,7 @@ import com.example.similarscandemo.R
 import com.clean.similarscan.api.model.MediaAsset
 
 /**
- * 首页分类模块的三张大缩略图预览。
+ * 首页分类模块的大缩略图预览，实际展示数量由外层业务决定。
  */
 class CategoryPreviewAdapter(
     @Suppress("UNUSED_PARAMETER") activity: Activity,

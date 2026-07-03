@@ -14,8 +14,8 @@ object ProductCategoryBuilder {
     /**
      * 将底层 SimilarGroup 列表转换成产品首页固定分类。
      *
-     * 数据库输出的是相似组、重复组和 Other 组；首页还需要把 Other Photos 拆出 Chat Photos，
-     * 并按固定 ProductCategoryType 顺序返回，方便宿主 UI 直接渲染。
+     * 数据库输出的是相似组、重复组和 Other 组；其中普通 Other Photos 与 Chat Photos
+     * 已在数据库查询阶段按 chat_source 拆分，这里只负责按固定 ProductCategoryType 顺序返回。
      */
     fun build(groups: List<SimilarGroup>): List<ProductCategory> {
         /*
@@ -32,11 +32,10 @@ object ProductCategoryBuilder {
             if (assets.size < 2) null else group.copy(assets = assets)
         }.map(::sortGroupByMediaTimeDesc)
 
-        val otherPhotos = normalizedGroups
+        val otherPhotoGroups = normalizedGroups
             .filter { it.category == GroupCategory.OTHER && it.kind == MediaKind.PHOTO }
-            .flatMap { it.assets }
-        val chatPhotos = otherPhotos.filter(MediaClassifier::looksLikeChatPhoto)
-        val regularOtherPhotos = otherPhotos.filterNot(MediaClassifier::looksLikeChatPhoto)
+        val chatPhotoGroups = otherPhotoGroups.filter { it.title == RAW_CHAT_PHOTOS_TITLE }
+        val regularOtherPhotoGroups = otherPhotoGroups.filter { it.title != RAW_CHAT_PHOTOS_TITLE }
 
         return ProductCategoryType.entries.map { type ->
             val categoryGroups = when (type) {
@@ -59,7 +58,7 @@ object ProductCategoryBuilder {
                 ProductCategoryType.OTHER_SCREENSHOTS ->
                     matched(normalizedGroups, GroupCategory.OTHER, MediaKind.SCREENSHOT)
                 ProductCategoryType.CHAT_PHOTOS ->
-                    synthetic(type.title, MediaKind.PHOTO, chatPhotos)
+                    synthetic(type.title, MediaKind.PHOTO, chatPhotoGroups)
                 ProductCategoryType.SIMILAR_SCREEN_RECORDINGS ->
                     matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.SCREEN_RECORDING)
                 ProductCategoryType.OTHER_SCREEN_RECORDINGS ->
@@ -67,7 +66,7 @@ object ProductCategoryBuilder {
                 ProductCategoryType.OTHER_VIDEOS ->
                     matched(normalizedGroups, GroupCategory.OTHER, MediaKind.VIDEO)
                 ProductCategoryType.OTHER ->
-                    synthetic(type.title, MediaKind.PHOTO, regularOtherPhotos)
+                    synthetic(type.title, MediaKind.PHOTO, regularOtherPhotoGroups)
             }
             ProductCategory(type, categoryGroups)
         }
@@ -98,14 +97,15 @@ object ProductCategoryBuilder {
     /**
      * 把一组散落资产合成一个展示用分组。
      *
-     * Chat Photos、Other Photos 这类分类不是数据库里的相似组，而是展示层从 Other Photos
-     * 资产中拆分出来的集合，因此需要构造一个虚拟 SimilarGroup。
+     * Chat Photos、Other 这类产品分类不是数据库里的相似组，而是由一个或多个 Other 资源集合
+     * 合成的展示组。
      */
     private fun synthetic(
         title: String,
         kind: MediaKind,
-        assets: List<MediaAsset>
+        groups: List<SimilarGroup>
     ): List<SimilarGroup> {
+        val assets = groups.flatMap { it.assets }.distinctBy { it.kind to it.id }
         if (assets.isEmpty()) return emptyList()
         val sortedAssets = assets.sortedWith(MEDIA_TIME_DESC)
         return listOf(
@@ -115,8 +115,8 @@ object ProductCategoryBuilder {
                 category = GroupCategory.OTHER,
                 kind = kind,
                 assets = sortedAssets,
-                totalAssetCount = sortedAssets.size,
-                totalSizeBytes = sortedAssets.sumOf { it.size }
+                totalAssetCount = groups.sumOf { it.totalAssetCount },
+                totalSizeBytes = groups.sumOf { it.totalSizeBytes }
             )
         )
     }
@@ -166,4 +166,6 @@ object ProductCategoryBuilder {
     private val MEDIA_TIME_DESC = compareByDescending<MediaAsset> { it.createdAt.time }
         .thenByDescending { it.dateAdded }
         .thenByDescending { it.id }
+
+    private const val RAW_CHAT_PHOTOS_TITLE = "Chat Photos"
 }
