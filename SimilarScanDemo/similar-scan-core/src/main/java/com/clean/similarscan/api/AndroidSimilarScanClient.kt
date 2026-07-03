@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.clean.similarscan.api.model.MediaAsset
 import com.clean.similarscan.api.model.ProductCategory
+import com.clean.similarscan.api.model.ProductCategoryType
 import com.clean.similarscan.api.model.ScanResult
 import com.clean.similarscan.api.model.SimilarGroup
 import com.clean.similarscan.internal.database.ScanDatabase
@@ -41,8 +42,24 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
         return scanner.loadCachedGroups(limit).map { it.toApi() }
     }
 
-    override fun loadProductCategories(limit: Int): List<ProductCategory> {
-        return ProductCategoryBuilder.build(scanner.loadCachedGroups(limit)).map { it.toApi() }
+    override fun loadProductCategories(
+        limit: Int,
+        previewAssetLimit: Int
+    ): List<ProductCategory> {
+        return ProductCategoryBuilder
+            .build(scanner.loadCachedGroups(limit, previewAssetLimit))
+            .map { it.toApi() }
+    }
+
+    override fun loadProductCategory(
+        type: ProductCategoryType,
+        previewAssetLimit: Int
+    ): ProductCategory? {
+        val internalType = com.clean.similarscan.internal.model.ProductCategoryType.valueOf(type.name)
+        return ProductCategoryBuilder
+            .build(scanner.loadCachedGroups(internalType, previewAssetLimit = previewAssetLimit))
+            .firstOrNull { it.type.name == type.name }
+            ?.toApi()
     }
 
     override fun loadBitmap(asset: MediaAsset, thumbSize: Int): Bitmap? {

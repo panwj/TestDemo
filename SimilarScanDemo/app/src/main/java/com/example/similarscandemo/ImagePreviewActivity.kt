@@ -118,8 +118,10 @@ class ImagePreviewActivity : Activity() {
      * 如果当前资源已被用户删除，优先停留在原位置附近；如果整组消失则安全关闭页面。
      */
     private fun reloadLatestAssets() {
-        val category = scanClient.loadProductCategories()
-            .first { it.type == categoryType }
+        val category = scanClient.loadProductCategory(categoryType) ?: run {
+            finish()
+            return
+        }
         val group = if (groupId > 0L) {
             category.groups.firstOrNull { it.id == groupId }
         } else {

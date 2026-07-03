@@ -19,7 +19,8 @@ import com.example.similarscandemo.util.FormatUtils
  */
 class ProductCategoryAdapter(
     private val activity: Activity,
-    private var categories: List<ProductCategory>
+    private var categories: List<ProductCategory>,
+    private val previewAssetLimit: Int
 ) : BaseAdapter() {
     fun submitList(newCategories: List<ProductCategory>) {
         categories = newCategories
@@ -50,7 +51,7 @@ class ProductCategoryAdapter(
         previewGrid.visibility = if (assets.isEmpty()) View.GONE else View.VISIBLE
         previewGrid.isEnabled = false
         previewGrid.isClickable = false
-        previewGrid.adapter = CategoryPreviewAdapter(activity, assets.take(PREVIEW_ASSET_COUNT))
+        previewGrid.adapter = CategoryPreviewAdapter(activity, assets.take(previewAssetLimit))
 
         view.setOnClickListener {
             activity.startActivity(
@@ -61,7 +62,4 @@ class ProductCategoryAdapter(
         return view
     }
 
-    companion object {
-        private const val PREVIEW_ASSET_COUNT = 2
-    }
 }

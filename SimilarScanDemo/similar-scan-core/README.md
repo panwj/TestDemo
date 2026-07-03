@@ -114,10 +114,21 @@ val result = client.scan(
 读取首页分类：
 
 ```kotlin
-val categories = client.loadProductCategories()
+val categories = client.loadProductCategories(previewAssetLimit = 2)
 ```
 
-`loadProductCategories()` 会返回分类下完整资源；首页预览展示几张图片由业务 UI 自行控制。
+`previewAssetLimit` 只限制每个分组随结果返回的预览资源数量，不影响
+`ProductCategory.itemCount`、`ProductCategory.totalSize`、`SimilarGroup.totalAssetCount`
+和 `SimilarGroup.totalSizeBytes`。首页建议传入较小值，例如 2，避免 Other 等大分类
+一次性加载大量资源。
+
+进入分类详情时推荐只读取当前分类，并保留默认预览数量以获取完整资源：
+
+```kotlin
+val category = client.loadProductCategory(ProductCategoryType.SIMILAR)
+```
+
+底层资源列表会分页读取 SQLite Cursor，避免大分类一次性塞满 CursorWindow。
 
 读取原始分组：
 

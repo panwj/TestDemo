@@ -29,7 +29,11 @@ object ProductCategoryBuilder {
         val normalizedGroups = groups.mapNotNull { group ->
             if (group.category != GroupCategory.SIMILAR) return@mapNotNull group
             val assets = group.assets.filterNot { (it.kind to it.id) in duplicateAssetKeys }
-            if (assets.size < 2) null else group.copy(assets = assets)
+            /*
+             * 首页可只加载每组少量预览资源，因此不能用 assets.size 判断真实分组是否有效。
+             * totalAssetCount 来自数据库聚合，表示完整分组数量；assets 只代表本次接口返回的展示样本。
+             */
+            if (group.totalAssetCount < 2) null else group.copy(assets = assets)
         }.map(::sortGroupByMediaTimeDesc)
 
         val otherPhotoGroups = normalizedGroups
@@ -105,8 +109,8 @@ object ProductCategoryBuilder {
         kind: MediaKind,
         groups: List<SimilarGroup>
     ): List<SimilarGroup> {
+        if (groups.isEmpty()) return emptyList()
         val assets = groups.flatMap { it.assets }.distinctBy { it.kind to it.id }
-        if (assets.isEmpty()) return emptyList()
         val sortedAssets = assets.sortedWith(MEDIA_TIME_DESC)
         return listOf(
             SimilarGroup(

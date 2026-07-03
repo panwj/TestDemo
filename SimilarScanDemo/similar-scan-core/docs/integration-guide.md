@@ -236,7 +236,7 @@ FAILED
 -> 后台线程调用 client.scan()
 -> observer 回调进度
 -> 宿主通过通知、广播、Flow、LiveData 或其他状态容器通知 UI
--> UI 节流读取 client.loadProductCategories()
+-> UI 节流读取 client.loadProductCategories(previewAssetLimit = 2)
 ```
 
 宿主应用可以使用前台 Service、WorkManager 或自有任务体系承载扫描。
@@ -273,7 +273,7 @@ SDK 提供两类结果接口。
 推荐首页使用：
 
 ```kotlin
-val categories = client.loadProductCategories()
+val categories = client.loadProductCategories(previewAssetLimit = 2)
 ```
 
 返回类型：
@@ -308,6 +308,20 @@ OTHER
 ```
 
 `itemCount` 是分类总资源数，`totalSize` 是分类总大小。`assets` 会对 `(kind, id)` 去重。
+
+`previewAssetLimit` 只限制每个底层分组随结果返回的预览资源数量，不影响分类和分组的
+真实数量、真实大小。首页、Tab 页这类只需要缩略预览的场景建议传入较小值，例如 2；
+这样每个分类仍能展示完整数量，但不会因为 Other、Other Screenshots 等大分类一次性
+读取几千张资源导致列表卡顿或 CursorWindow 压力。
+
+详情页推荐按当前入口只读取一个分类：
+
+```kotlin
+val category = client.loadProductCategory(ProductCategoryType.SIMILAR)
+```
+
+`loadProductCategory()` 默认返回该分类下完整资源，适合详情页、删除页、大图预览页使用。
+SDK 内部会按固定页大小读取 SQLite Cursor，避免大分类一次性加载到单个 CursorWindow。
 
 ### 8.2 原始分组
 
@@ -466,7 +480,7 @@ SimilarScanRequest(
 onCreate
 -> 创建 client
 -> recoverStaleDeletePending()
--> loadProductCategories() 展示缓存
+-> loadProductCategories(previewAssetLimit = 2) 展示缓存
 -> 如果没有权限，展示授权入口
 
 用户点击扫描
@@ -476,11 +490,11 @@ onCreate
 
 收到扫描进度
 -> 更新状态文案
--> 节流调用 loadProductCategories()
+-> 节流调用 loadProductCategories(previewAssetLimit = 2)
 
 收到完成
 -> 隐藏进度
--> 再次 loadProductCategories()
+-> 再次 loadProductCategories(previewAssetLimit = 2)
 
 onDestroy
 -> client.close()
@@ -527,7 +541,10 @@ OTHER_VIDEOS
 OTHER
 ```
 
-`Other` 类可能资源很多。SDK 会返回完整资源集合；首页预览展示几张资源应由宿主 UI 自行控制，详情页可以直接展示该分类下的完整列表。
+`Other` 类可能资源很多。首页建议通过 `previewAssetLimit` 只读取少量预览资源，同时用
+`itemCount` 和 `totalSize` 展示真实数量与大小。用户点击分类后，再通过
+`loadProductCategory(categoryType)` 读取当前分类的完整列表，避免首页一次性加载全部分类
+下的全部资源。
 
 ## 14. 线程与性能注意事项
 
@@ -584,7 +601,8 @@ Duplicate 候选 SHA-256 按需或延后计算
 - Manifest 声明媒体权限。
 - Activity 中申请媒体权限。
 - 后台线程、前台 Service 或 Worker 中调用 `client.scan()`。
-- 首页读取 `client.loadProductCategories()`。
+- 首页读取 `client.loadProductCategories(previewAssetLimit = 2)`，只拿少量预览资源和完整计数。
+- 分类详情读取 `client.loadProductCategory(categoryType)`，只加载当前分类的完整资源。
 - 列表或详情使用 `client.loadBitmap()` 加载预览图。
 - 删除前调用 `markDeletePending()`，删除确认后调用 `finalizeDelete()` 或 `restoreDeletePending()`。
 - 生命周期结束时调用 `client.close()`。

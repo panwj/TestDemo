@@ -7,6 +7,7 @@ import com.clean.similarscan.internal.database.ScanDatabase
 import com.clean.similarscan.internal.database.AssetScanToken
 import com.clean.similarscan.internal.model.MediaAsset
 import com.clean.similarscan.internal.model.MediaKind
+import com.clean.similarscan.internal.model.ProductCategoryType
 import com.clean.similarscan.internal.model.ScanProgress
 import com.clean.similarscan.internal.model.ScanResult
 import com.clean.similarscan.internal.model.ScanStage
@@ -293,7 +294,16 @@ internal class SimilarMediaScanner(context: Context) {
      *
      * 用于 App 启动后先展示上次扫描结果，也用于扫描中按进度刷新当前已落库结果。
      */
-    fun loadCachedGroups(limit: Int = MAX_GROUPS_TO_SHOW) = database.loadGroups(limit)
+    fun loadCachedGroups(
+        limit: Int = MAX_GROUPS_TO_SHOW,
+        previewAssetLimit: Int = Int.MAX_VALUE
+    ) = database.loadGroups(limit, previewAssetLimit)
+
+    fun loadCachedGroups(
+        productCategoryType: ProductCategoryType,
+        limit: Int = MAX_GROUPS_TO_SHOW,
+        previewAssetLimit: Int = Int.MAX_VALUE
+    ) = database.loadGroups(productCategoryType, limit, previewAssetLimit)
 
     /**
      * SimilarMediaScanner 持有 Room 数据库连接。前台服务每次扫描都会创建 scanner，

@@ -496,14 +496,30 @@ ui/ThumbLoader.kt
 
 异步解码并使用 LruCache，避免 ListView 滑动时同步解码 bitmap。
 
-Other 分类可能包含大量资源。当前 SDK 会返回完整资源集合，Demo 业务 UI 统一按媒体时间倒序展示：
+Other 分类可能包含大量资源。当前首页不再为了展示预览一次性读取完整资源集合，而是由
+业务层传入首页预览数量：
+
+```kotlin
+client.loadProductCategories(previewAssetLimit = 2)
+```
+
+该参数只限制每个分组返回的预览资源，不影响分类和分组的真实数量、真实大小。进入某个
+分类详情页后，再按当前分类单独读取完整资源：
+
+```kotlin
+client.loadProductCategory(categoryType)
+```
+
+SDK 数据库读取资源列表时按固定页大小分页查询，避免 Other 等大分类一次性塞满
+CursorWindow。Demo 业务 UI 统一按媒体时间倒序展示：
 
 ```text
 mediaTime = max(createdAt, dateAdded)
 mediaTime DESC, dateAdded DESC, id DESC
 ```
 
-首页预览由业务层控制，只取分类资源中的前 2 张作为预览图；分类数量和详情页列表都使用完整资源集合。
+首页默认仅展示每组前 2 个预览资源；分类数量使用聚合统计值，详情页列表使用当前分类的
+完整资源集合。
 
 ## 17. 当前已知边界
 

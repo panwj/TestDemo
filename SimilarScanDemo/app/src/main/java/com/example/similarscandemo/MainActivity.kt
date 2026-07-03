@@ -323,7 +323,9 @@ class MainActivity : Activity() {
         val generation = renderGeneration.incrementAndGet()
         renderExecutor.execute {
             if (generation != renderGeneration.get()) return@execute
-            val categories = scanClient.loadProductCategories()
+            val categories = scanClient.loadProductCategories(
+                previewAssetLimit = HOME_PREVIEW_ASSET_LIMIT
+            )
             mainHandler.post {
                 if (generation != renderGeneration.get()) return@post
                 render(categories)
@@ -337,7 +339,11 @@ class MainActivity : Activity() {
     private fun render(categories: List<ProductCategory>) {
         val adapter = categoryAdapter
         if (adapter == null) {
-            categoryAdapter = ProductCategoryAdapter(this, categories)
+            categoryAdapter = ProductCategoryAdapter(
+                activity = this,
+                categories = categories,
+                previewAssetLimit = HOME_PREVIEW_ASSET_LIMIT
+            )
             categoryList.adapter = categoryAdapter
         } else {
             adapter.submitList(categories)
@@ -412,6 +418,7 @@ class MainActivity : Activity() {
     companion object {
         const val EXTRA_REQUEST_PERMISSION = "request_permission"
         private const val MEDIA_CHANGE_DEBOUNCE_MS = 2_000L
+        private const val HOME_PREVIEW_ASSET_LIMIT = 2
         private const val RESULT_RENDER_THROTTLE_MS = 800L
         private const val SERVICE_START_GRACE_MS = 2_000L
         private const val STATE_PENDING_SCAN = "state_pending_scan"

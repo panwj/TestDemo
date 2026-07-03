@@ -158,8 +158,7 @@ class GroupDetailActivity : Activity() {
     private fun loadLatestCategoryWithRetry(): ProductCategory? {
         repeat(DB_READ_RETRY_COUNT) { attempt ->
             try {
-                return scanClient.loadProductCategories()
-                    .first { it.type == categoryType }
+                return scanClient.loadProductCategory(categoryType)
             } catch (_: SQLiteDatabaseLockedException) {
                 Thread.sleep(DB_READ_RETRY_DELAY_MS * (attempt + 1))
             } catch (_: IllegalStateException) {
@@ -167,8 +166,7 @@ class GroupDetailActivity : Activity() {
             }
         }
         return runCatching {
-            scanClient.loadProductCategories()
-                .first { it.type == categoryType }
+            scanClient.loadProductCategory(categoryType)
         }.getOrNull()
     }
 
