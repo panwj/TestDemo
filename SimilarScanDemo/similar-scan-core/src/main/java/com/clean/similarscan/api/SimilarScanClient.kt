@@ -21,16 +21,17 @@ interface SimilarScanClient : Closeable {
     ): ScanResult
 
     /** 查询底层相似/相同分组，主要用于诊断或内部适配。 */
-    fun loadGroups(limit: Int = Int.MAX_VALUE): List<SimilarGroup>
+    fun loadGroups(groupLimit: Int = Int.MAX_VALUE): List<SimilarGroup>
 
     /**
      * 查询产品分类结果，宿主 UI 优先使用该接口，不直接拼装数据库分组。
      *
+     * groupLimit 只限制底层相似/相同分组数量，不限制产品分类数量，也不限制每组资源数量。
      * previewAssetLimit 只限制每个分组随结果返回的预览资源数量，不影响 totalAssetCount/totalSizeBytes。
      * 首页可以传入较小值提升渲染性能；详情页需要完整资源时保留默认值。
      */
     fun loadProductCategories(
-        limit: Int = Int.MAX_VALUE,
+        groupLimit: Int = Int.MAX_VALUE,
         previewAssetLimit: Int = Int.MAX_VALUE
     ): List<ProductCategory>
 

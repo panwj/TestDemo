@@ -19,8 +19,8 @@ object ProductCategoryBuilder {
      */
     fun build(groups: List<SimilarGroup>): List<ProductCategory> {
         /*
-         * 数据库已经保证 Duplicate/Similar 互斥；这里再做一次展示层防御，
-         * 让旧版本数据库升级后即使尚未全量重扫，分类总数也不会重复累计。
+         * 数据库重建分组时已经保证 Duplicate/Similar 互斥；这里再做一次展示层防御，
+         * 避免极端情况下同一资源同时参与两个分类导致首页统计重复累计。
          */
         val duplicateAssetKeys = groups
             .filter { it.category == GroupCategory.DUPLICATE }

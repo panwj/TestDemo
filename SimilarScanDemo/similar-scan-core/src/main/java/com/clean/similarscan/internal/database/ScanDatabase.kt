@@ -163,7 +163,7 @@ internal abstract class ScanRoomDatabase : RoomDatabase()
  * Room 原生 SQL 执行适配层。
  *
  * 当前扫描链路包含动态查询、批量插入和 Cursor 分页读取；这层只把原生 SQL 调用转发到
- * Room 管理的数据库连接，不承担旧版本或旧用户数据兼容职责。
+ * Room 管理的数据库连接，避免扫描链路直接持有底层数据库实现。
  */
 private class SqlDb(private val delegate: SupportSQLiteDatabase) {
     fun setForeignKeyConstraintsEnabled(enabled: Boolean) {
@@ -1109,8 +1109,8 @@ internal class ScanDatabase(context: Context) {
         videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
     ): List<CandidateFingerprint> {
         /*
-         * 视频保存完整多帧指纹。旧版本会读取同类型所有视频再逐一比较，视频数量一大
-         * 就会退化成近似 O(n²)。这里先用轻量元数据做候选收窄：
+         * 视频保存完整多帧指纹。为了避免同类型视频逐一比较时退化成近似 O(n²)，
+         * 这里先用轻量元数据做候选收窄：
          * 1. 类型必须一致；
          * 2. 时长桶接近，优先排除明显不是同一段内容的视频；
          * 3. 宽高比接近，避免横屏/竖屏误召回；
@@ -1298,51 +1298,51 @@ internal class ScanDatabase(context: Context) {
     }
 
     fun loadGroups(
-        limit: Int,
+        groupLimit: Int,
         assetLimitPerGroup: Int = Int.MAX_VALUE
     ): List<SimilarGroup> {
-        val matchedGroups = loadMatchedGroups(limit, assetLimitPerGroup)
+        val matchedGroups = loadMatchedGroups(groupLimit, assetLimitPerGroup)
         val otherGroups = loadOtherGroups(assetLimitPerGroup)
         return matchedGroups + otherGroups
     }
 
     fun loadGroups(
         productCategoryType: ProductCategoryType,
-        limit: Int,
+        groupLimit: Int,
         assetLimitPerGroup: Int = Int.MAX_VALUE
     ): List<SimilarGroup> {
         return when (productCategoryType) {
             ProductCategoryType.SIMILAR ->
                 loadMatchedGroups(
-                    limit,
+                    groupLimit,
                     assetLimitPerGroup,
                     setOf(GroupCategory.SIMILAR),
                     setOf(MediaKind.PHOTO)
                 )
             ProductCategoryType.DUPLICATES ->
                 loadMatchedGroups(
-                    limit,
+                    groupLimit,
                     assetLimitPerGroup,
                     setOf(GroupCategory.DUPLICATE),
                     setOf(MediaKind.PHOTO, MediaKind.SCREENSHOT)
                 )
             ProductCategoryType.SIMILAR_SCREENSHOTS ->
                 loadMatchedGroups(
-                    limit,
+                    groupLimit,
                     assetLimitPerGroup,
                     setOf(GroupCategory.SIMILAR),
                     setOf(MediaKind.SCREENSHOT)
                 )
             ProductCategoryType.SIMILAR_VIDEOS ->
                 loadMatchedGroups(
-                    limit,
+                    groupLimit,
                     assetLimitPerGroup,
                     setOf(GroupCategory.SIMILAR),
                     setOf(MediaKind.VIDEO)
                 )
             ProductCategoryType.SIMILAR_SCREEN_RECORDINGS ->
                 loadMatchedGroups(
-                    limit,
+                    groupLimit,
                     assetLimitPerGroup,
                     setOf(GroupCategory.SIMILAR),
                     setOf(MediaKind.SCREEN_RECORDING)
@@ -1393,7 +1393,7 @@ internal class ScanDatabase(context: Context) {
     }
 
     private fun loadMatchedGroups(
-        limit: Int,
+        groupLimit: Int,
         assetLimitPerGroup: Int,
         categoryFilter: Set<GroupCategory> = emptySet(),
         kindFilter: Set<MediaKind> = emptySet()
@@ -1401,7 +1401,7 @@ internal class ScanDatabase(context: Context) {
         val args = mutableListOf<String>()
         val categorySql = inClause("g.category", categoryFilter.map { it.name }, args)
         val kindSql = inClause("g.type", kindFilter.map { it.name }, args)
-        args += limit.toString()
+        args += groupLimit.toString()
         return readableDatabase.rawQuery(
             """
             SELECT g.id, g.category, g.type, COUNT(i.asset_id) AS c, SUM(a.size) AS total_size, MIN(a.created_at) AS oldest

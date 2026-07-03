@@ -232,7 +232,7 @@ internal class SimilarMediaScanner(context: Context) {
             mediaStoreVersion,
             completedFullScan = fullScan && hasFullVisualAccess
         )
-        val groups = metrics.measure("load_groups") { database.loadGroups(MAX_GROUPS_TO_SHOW) }
+        val groups = metrics.measure("load_groups") { database.loadGroups(DEFAULT_GROUP_LIMIT) }
         val elapsed = System.currentTimeMillis() - startedAt
         val elapsedText = ScanElapsedFormatter.format(elapsed)
         if (enableMetricsLog) {
@@ -295,15 +295,15 @@ internal class SimilarMediaScanner(context: Context) {
      * 用于 App 启动后先展示上次扫描结果，也用于扫描中按进度刷新当前已落库结果。
      */
     fun loadCachedGroups(
-        limit: Int = MAX_GROUPS_TO_SHOW,
+        groupLimit: Int = DEFAULT_GROUP_LIMIT,
         previewAssetLimit: Int = Int.MAX_VALUE
-    ) = database.loadGroups(limit, previewAssetLimit)
+    ) = database.loadGroups(groupLimit, previewAssetLimit)
 
     fun loadCachedGroups(
         productCategoryType: ProductCategoryType,
-        limit: Int = MAX_GROUPS_TO_SHOW,
+        groupLimit: Int = DEFAULT_GROUP_LIMIT,
         previewAssetLimit: Int = Int.MAX_VALUE
-    ) = database.loadGroups(productCategoryType, limit, previewAssetLimit)
+    ) = database.loadGroups(productCategoryType, groupLimit, previewAssetLimit)
 
     /**
      * SimilarMediaScanner 持有 Room 数据库连接。前台服务每次扫描都会创建 scanner，
@@ -644,7 +644,7 @@ internal class SimilarMediaScanner(context: Context) {
 
     companion object {
         private const val BATCH_SIZE = 500
-        private const val MAX_GROUPS_TO_SHOW = Int.MAX_VALUE
+        private const val DEFAULT_GROUP_LIMIT = Int.MAX_VALUE
         private const val IMAGE_COMPUTE_THREADS = 4
         private const val VIDEO_COMPUTE_THREADS = 2
         /*

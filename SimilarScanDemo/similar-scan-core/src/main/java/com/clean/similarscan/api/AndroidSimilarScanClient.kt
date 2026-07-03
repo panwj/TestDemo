@@ -38,16 +38,16 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
         }.toApi()
     }
 
-    override fun loadGroups(limit: Int): List<SimilarGroup> {
-        return scanner.loadCachedGroups(limit).map { it.toApi() }
+    override fun loadGroups(groupLimit: Int): List<SimilarGroup> {
+        return scanner.loadCachedGroups(groupLimit).map { it.toApi() }
     }
 
     override fun loadProductCategories(
-        limit: Int,
+        groupLimit: Int,
         previewAssetLimit: Int
     ): List<ProductCategory> {
         return ProductCategoryBuilder
-            .build(scanner.loadCachedGroups(limit, previewAssetLimit))
+            .build(scanner.loadCachedGroups(groupLimit, previewAssetLimit))
             .map { it.toApi() }
     }
 
