@@ -876,6 +876,23 @@ type     = PHOTO / SCREENSHOT / VIDEO / SCREEN_RECORDING
 
 `similar_group_item` 保存 group 与 asset 的关系。
 
+关键查询索引：
+
+```text
+media_asset(media_store_id, type) unique
+media_asset(type, state, fingerprint_algorithm_version)
+media_asset(type, state, created_at, date_added, media_store_id)
+similar_group(category, type)
+similar_group_item(asset_id)
+fingerprint(hash_prefix, aspect_bucket, duration_bucket)
+fingerprint(image_hash)
+fingerprint(duration_bucket, aspect_bucket)
+```
+
+其中 `media_asset(type, state, created_at, date_added, media_store_id)` 主要服务首页预览、
+Other 类详情分页和按媒体时间倒序展示；`similar_group(category, type)` 主要服务产品分类
+过滤、分组重建和 Other 排除已命中资源。
+
 ### 17.1 数据库读写边界
 
 `ScanDatabase` 是 SDK 内部数据库访问层，应用业务层不应直接调用。对外只通过
@@ -896,6 +913,7 @@ type     = PHOTO / SCREENSHOT / VIDEO / SCREEN_RECORDING
 - 分类和分组的真实数量、真实大小、最新媒体时间由 SQL 聚合获取，不依赖预览资源数量。
 - 平铺类详情使用 `loadProductCategoryAssets(type, offset, limit)` 分页读取。
 - 相似/相同分组详情使用 `loadGroupAssetsPage(groupId, offset, limit)` 分页读取。
+- `loadProductCategoryAssets()` 只服务平铺分类；传入 grouped 分类时返回空列表，不抛异常，避免接入方误用导致线上崩溃。
 - DB 写入路径和展示读取路径没有混在对外 API 中，业务层无法直接修改指纹或分组表。
 
 仍需注意：
@@ -986,6 +1004,8 @@ OTHER
 - `grouped = true` 表示分类下包含多个真实相似/相同分组，详情页通常先展示分组，再按 `groupId` 分页读取组内资源。
 - `grouped = false` 表示平铺类资源集合，详情页可直接按分类分页读取资源。
 - 录屏仍以 `SCREEN_RECORDING` 入库和识别，但产品层归并到视频分类。
+- 视频相似候选按视频族召回，`VIDEO` 与 `SCREEN_RECORDING` 可以互相进入候选；最终仍需通过多帧 `dHash + colorHash` 精判。
+- 如果视频候选中任一方是录屏，精判阶段使用更严格的录屏阈值，降低静态 UI/录屏内容误合并。
 - 聊天图片不再单独成为产品分类，`chatSource` 字段仍保留给业务层自定义使用。
 
 展示层会再次做 Duplicate/Similar 互斥防御：

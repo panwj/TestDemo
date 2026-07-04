@@ -327,6 +327,11 @@ val page = client.loadProductCategoryAssets(
 )
 ```
 
+注意：`loadProductCategoryAssets()` 只服务 `grouped = false` 的平铺分类，例如
+`OTHER`、`OTHER_VIDEOS`、`OTHER_SCREENSHOTS`。如果传入 `SIMILAR`、`DUPLICATES`
+这类分组分类，SDK 会保持宽容并返回空列表，不会抛异常。分组分类必须先读取
+`ProductCategory.groups`，再按 `groupId` 分页加载组内资源。
+
 对于 Similar、Duplicates 等分组类详情，可以按 groupId 分页加载某个分组下的资源：
 
 ```kotlin

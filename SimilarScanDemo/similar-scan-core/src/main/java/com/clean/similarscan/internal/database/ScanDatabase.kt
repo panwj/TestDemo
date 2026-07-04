@@ -31,7 +31,7 @@ import java.util.Date
 import java.util.Locale
 
 private const val DB_NAME = "similar_scan.db"
-private const val DB_VERSION = 27
+private const val DB_VERSION = 28
 
 /**
  * Room 数据库承载扫描库连接。
@@ -47,7 +47,11 @@ private const val DB_VERSION = 27
         Index(value = ["state", "type"], name = "idx_asset_state_type"),
         Index(value = ["type", "duration", "size"], name = "idx_asset_type_duration_size"),
         Index(value = ["type", "state", "size", "width", "height", "is_edited"], name = "idx_asset_duplicate_ref"),
-        Index(value = ["type", "state", "fingerprint_algorithm_version"], name = "idx_asset_video_candidate")
+        Index(value = ["type", "state", "fingerprint_algorithm_version"], name = "idx_asset_video_candidate"),
+        Index(
+            value = ["type", "state", "created_at", "date_added", "media_store_id"],
+            name = "idx_asset_category_paged_read"
+        )
     ]
 )
 internal data class MediaAssetEntity(
@@ -115,7 +119,12 @@ internal data class FingerprintEntity(
     @ColumnInfo(name = "video_fingerprint_source") val videoFingerprintSource: String?
 )
 
-@Entity(tableName = "similar_group")
+@Entity(
+    tableName = "similar_group",
+    indices = [
+        Index(value = ["category", "type"], name = "idx_group_category_type")
+    ]
+)
 internal data class SimilarGroupEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val category: String,
@@ -559,11 +568,16 @@ internal class ScanDatabase(context: Context) {
                 it == MediaKind.SCREEN_RECORDING
         }
         if (supportedKinds.isEmpty()) return
+        val groupingKinds = linkedSetOf<MediaKind>().apply {
+            if (MediaKind.PHOTO in supportedKinds) add(MediaKind.PHOTO)
+            if (MediaKind.SCREENSHOT in supportedKinds) add(MediaKind.SCREENSHOT)
+            if (supportedKinds.any(::isVideoLikeKind)) add(MediaKind.VIDEO)
+        }
 
         val db = writableDatabase
         db.beginTransaction()
         try {
-            supportedKinds.forEach kindLoop@{ kind ->
+            groupingKinds.forEach kindLoop@{ kind ->
                 /*
                  * 扫描过程中 processVisual/processVideo 已经把相似候选实时写入
                  * Similar 分组。最终重建时先把这些候选读成邻接表，再删除旧组并按参考规则
@@ -572,9 +586,10 @@ internal class ScanDatabase(context: Context) {
                  * 如果是旧数据、异常中断或首次进入时没有可复用候选，则回退到原 BK-Tree
                  * 召回路径，保证结果不会因为候选表缺失而被清空。
                  */
-                val reusableCandidateMap = loadExistingSimilarCandidateMap(db, kind)
+                val groupingFamily = groupingKindsForFinalRebuild(kind)
+                val reusableCandidateMap = loadExistingSimilarCandidateMap(db, groupingFamily)
                 deleteSimilarGroups(db, kind)
-                val records = loadGroupingFingerprints(db, kind, imageFingerprintSize, videoFingerprintMode)
+                val records = loadGroupingFingerprints(db, kind, groupingFamily, imageFingerprintSize, videoFingerprintMode)
                 if (records.size < 2) return@kindLoop
 
                 val recordsById = records.associateBy(GroupingFingerprint::assetId)
@@ -617,10 +632,10 @@ internal class ScanDatabase(context: Context) {
                             .filter(remainingIds::contains)
                             .filter { candidateId ->
                                 val candidate = recordsById[candidateId] ?: return@filter false
-                                if (kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING) {
+                                if (isVideoLikeKind(kind)) {
                                     val anchorVideo = anchor.videoFingerprint ?: return@filter false
                                     val candidateVideo = candidate.videoFingerprint ?: return@filter false
-                                    anchorVideo.isSimilarTo(candidateVideo, kind)
+                                    anchorVideo.isSimilarTo(candidateVideo, videoCompareKind(anchor.kind, candidate.kind))
                                 } else {
                                     anchor.hash.isSimilarTo(candidate.hash, kind)
                                 }
@@ -655,8 +670,11 @@ internal class ScanDatabase(context: Context) {
 
     private fun loadExistingSimilarCandidateMap(
         db: SqlDb,
-        kind: MediaKind
+        kinds: Set<MediaKind>
     ): Map<Long, Set<Long>> {
+        val kindNames = kinds.map(MediaKind::name)
+        val groupTypePlaceholders = kindNames.joinToString(",") { "?" }
+        val assetTypePlaceholders = kindNames.joinToString(",") { "?" }
         val groupMembers = linkedMapOf<Long, MutableList<Long>>()
         db.rawQuery(
             """
@@ -665,12 +683,12 @@ internal class ScanDatabase(context: Context) {
             JOIN similar_group_item i ON i.group_id = g.id
             JOIN media_asset a ON a.id = i.asset_id
             WHERE g.category = ?
-              AND g.type = ?
-              AND a.type = ?
+              AND g.type IN ($groupTypePlaceholders)
+              AND a.type IN ($assetTypePlaceholders)
               AND a.state = 'ACTIVE'
             ORDER BY g.id ASC
             """.trimIndent(),
-            arrayOf(GroupCategory.SIMILAR.name, kind.name, kind.name)
+            (listOf(GroupCategory.SIMILAR.name) + kindNames + kindNames).toTypedArray()
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 groupMembers
@@ -698,25 +716,28 @@ internal class ScanDatabase(context: Context) {
     }
 
     private fun deleteSimilarGroups(db: SqlDb, kind: MediaKind) {
+        val kindNames = groupingKindsForFinalRebuild(kind).map(MediaKind::name)
+        val placeholders = kindNames.joinToString(",") { "?" }
         db.execSQL(
             """
             DELETE FROM similar_group_item
             WHERE group_id IN (
-                SELECT id FROM similar_group WHERE category=? AND type=?
+                SELECT id FROM similar_group WHERE category=? AND type IN ($placeholders)
             )
             """.trimIndent(),
-            arrayOf(GroupCategory.SIMILAR.name, kind.name)
+            (listOf(GroupCategory.SIMILAR.name) + kindNames).toTypedArray()
         )
         db.delete(
             "similar_group",
-            "category=? AND type=?",
-            arrayOf(GroupCategory.SIMILAR.name, kind.name)
+            "category=? AND type IN ($placeholders)",
+            (listOf(GroupCategory.SIMILAR.name) + kindNames).toTypedArray()
         )
     }
 
     private fun loadGroupingFingerprints(
         db: SqlDb,
         kind: MediaKind,
+        kinds: Set<MediaKind> = setOf(kind),
         imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
         videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
     ): List<GroupingFingerprint> {
@@ -729,13 +750,15 @@ internal class ScanDatabase(context: Context) {
         } else {
             "a.created_at ASC, a.media_store_id DESC"
         }
+        val kindNames = kinds.map(MediaKind::name)
+        val kindPlaceholders = kindNames.joinToString(",") { "?" }
         return db.rawQuery(
             """
-            SELECT a.id, f.image_hash, f.color_hash,
+            SELECT a.id, a.type, f.image_hash, f.color_hash,
                    f.video_frame_hashes, f.video_frame_colors, f.video_fingerprint_source
             FROM media_asset a
             JOIN fingerprint f ON f.asset_id=a.id
-            WHERE a.type=?
+            WHERE a.type IN ($kindPlaceholders)
               AND a.state='ACTIVE'
               AND a.fingerprint_status='DONE'
               AND a.fingerprint_algorithm_version=?
@@ -746,35 +769,36 @@ internal class ScanDatabase(context: Context) {
                     ON duplicate_group.id=duplicate_item.group_id
                   WHERE duplicate_item.asset_id=a.id
                     AND duplicate_group.category=?
-                    AND duplicate_group.type=?
+                    AND duplicate_group.type IN ($kindPlaceholders)
               )
             ORDER BY $orderBy
             """.trimIndent(),
-            arrayOf(
-                kind.name,
+            (
+                kindNames + listOf(
                 fingerprintAlgorithmVersion(kind, imageFingerprintSize, videoFingerprintMode).toString(),
-                GroupCategory.DUPLICATE.name,
-                kind.name
-            )
+                GroupCategory.DUPLICATE.name
+                ) + kindNames
+                ).toTypedArray()
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
                     val videoFingerprint =
-                        if (cursor.isNull(3) || cursor.isNull(4)) {
+                        if (cursor.isNull(4) || cursor.isNull(5)) {
                             null
                         } else {
                             VideoFingerprintCodec.decode(
-                                hashes = cursor.getString(3),
-                                colors = cursor.getString(4),
-                                source = if (cursor.isNull(5)) null else cursor.getString(5)
+                                hashes = cursor.getString(4),
+                                colors = cursor.getString(5),
+                                source = if (cursor.isNull(6)) null else cursor.getString(6)
                             )
                         }
                     add(
                         GroupingFingerprint(
                             assetId = cursor.getLong(0),
+                            kind = MediaKind.valueOf(cursor.getString(1)),
                             hash = CombinedHash(
-                                imageHash = cursor.getLong(1),
-                                colorHash = ColorHashCodec.decode(cursor.getString(2))
+                                imageHash = cursor.getLong(2),
+                                colorHash = ColorHashCodec.decode(cursor.getString(3))
                             ),
                             videoFingerprint = videoFingerprint
                         )
@@ -1111,18 +1135,32 @@ internal class ScanDatabase(context: Context) {
         /*
          * 视频保存完整多帧指纹。为了避免同类型视频逐一比较时退化成近似 O(n²)，
          * 这里先用轻量元数据做候选收窄：
-         * 1. 类型必须一致；
+         * 1. 视频族类型一致，VIDEO 与 SCREEN_RECORDING 可以互相召回；
          * 2. 时长桶接近，优先排除明显不是同一段内容的视频；
          * 3. 宽高比接近，避免横屏/竖屏误召回；
          * 4. 指纹算法版本一致，防止旧算法结果参与新算法比较。
          *
-         * 这些条件只用于召回，最终仍由多帧 dHash/colorHash 精判决定是否相似。
+         * 这些条件只用于召回，最终仍由多帧 dHash/colorHash 精判决定是否相似；
+         * 若任一候选是录屏，精判阶段会使用更严格的录屏阈值。
          */
         if (videoFingerprintMode == VideoFingerprintMode.REFERENCE_COMPAT) {
             return findCompetitorVideoFingerprintCandidates(assetId, asset, videoFingerprintMode)
         }
+        val candidateKinds = candidateKindsForVideo(asset.kind)
+        val kindPlaceholders = candidateKinds.joinToString(",") { "?" }
         val durationBucket = HashBuckets.durationBucket(asset.duration)
         val aspectBucket = HashBuckets.aspectBucket(asset.width, asset.height)
+        val args = buildList {
+            addAll(candidateKinds.map(MediaKind::name))
+            add(fingerprintAlgorithmVersion(asset.kind, DEFAULT_IMAGE_FINGERPRINT_SIZE, videoFingerprintMode).toString())
+            add(assetId.toString())
+            add(durationBucket.toString())
+            add(videoDurationTolerance(asset.duration).toString())
+            add(aspectBucket.toString())
+            add(VIDEO_ASPECT_BUCKET_TOLERANCE.toString())
+            add(durationBucket.toString())
+            add(aspectBucket.toString())
+        }
         return readableDatabase.rawQuery(
             """
             SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
@@ -1131,7 +1169,7 @@ internal class ScanDatabase(context: Context) {
                    f.video_fingerprint_source
             FROM fingerprint f
             JOIN media_asset a ON a.id = f.asset_id
-            WHERE a.type = ?
+            WHERE a.type IN ($kindPlaceholders)
               AND a.state = 'ACTIVE'
               AND a.fingerprint_algorithm_version = ?
               AND a.id != ?
@@ -1142,17 +1180,7 @@ internal class ScanDatabase(context: Context) {
               ABS(f.duration_bucket - ?) ASC,
               ABS(f.aspect_bucket - ?) ASC
             """.trimIndent(),
-            arrayOf(
-                asset.kind.name,
-                fingerprintAlgorithmVersion(asset.kind, DEFAULT_IMAGE_FINGERPRINT_SIZE, videoFingerprintMode).toString(),
-                assetId.toString(),
-                durationBucket.toString(),
-                videoDurationTolerance(asset.duration).toString(),
-                aspectBucket.toString(),
-                VIDEO_ASPECT_BUCKET_TOLERANCE.toString(),
-                durationBucket.toString(),
-                aspectBucket.toString()
-            )
+            args.toTypedArray()
         ).use { cursor -> candidateFingerprintsFrom(cursor) }
     }
 
@@ -1161,6 +1189,13 @@ internal class ScanDatabase(context: Context) {
         asset: MediaAsset,
         videoFingerprintMode: VideoFingerprintMode
     ): List<CandidateFingerprint> {
+        val candidateKinds = candidateKindsForVideo(asset.kind)
+        val kindPlaceholders = candidateKinds.joinToString(",") { "?" }
+        val args = buildList {
+            addAll(candidateKinds.map(MediaKind::name))
+            add(fingerprintAlgorithmVersion(asset.kind, DEFAULT_IMAGE_FINGERPRINT_SIZE, videoFingerprintMode).toString())
+            add(assetId.toString())
+        }
         return readableDatabase.rawQuery(
             """
             SELECT a.id, a.media_store_id, a.uri, a.type, a.name, a.width, a.height, a.duration,
@@ -1169,18 +1204,14 @@ internal class ScanDatabase(context: Context) {
                    f.video_fingerprint_source
             FROM fingerprint f
             JOIN media_asset a ON a.id = f.asset_id
-            WHERE a.type = ?
+            WHERE a.type IN ($kindPlaceholders)
               AND a.state = 'ACTIVE'
               AND a.fingerprint_algorithm_version = ?
               AND a.id != ?
               AND f.video_frame_hashes IS NOT NULL
             ORDER BY a.date_added DESC
             """.trimIndent(),
-            arrayOf(
-                asset.kind.name,
-                fingerprintAlgorithmVersion(asset.kind, DEFAULT_IMAGE_FINGERPRINT_SIZE, videoFingerprintMode).toString(),
-                assetId.toString()
-            )
+            args.toTypedArray()
         ).use { cursor -> candidateFingerprintsFrom(cursor) }
     }
 
@@ -1535,6 +1566,11 @@ internal class ScanDatabase(context: Context) {
         offset: Int,
         limit: Int
     ): List<MediaAsset> {
+        /*
+         * 该接口只服务非分组分类。分组分类会返回空列表，调用方应先读取 ProductCategory.groups，
+         * 再使用 loadGroupAssetsPage(groupId, ...) 分页加载组内资源。这里保持宽容返回，避免
+         * 接入方误用时直接崩溃；SDK 集成文档会明确标注使用边界。
+         */
         val spec = otherAssetQuerySpec(productCategoryType) ?: return emptyList()
         return loadAssets(
             kinds = spec.kinds,
@@ -1559,6 +1595,34 @@ internal class ScanDatabase(context: Context) {
             "SELECT id FROM media_asset WHERE media_store_id=? AND type=?",
             arrayOf(mediaStoreId.toString(), kind.name)
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+    }
+
+    private fun candidateKindsForVideo(kind: MediaKind): Set<MediaKind> {
+        return if (isVideoLikeKind(kind)) {
+            setOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING)
+        } else {
+            setOf(kind)
+        }
+    }
+
+    private fun groupingKindsForFinalRebuild(kind: MediaKind): Set<MediaKind> {
+        return if (isVideoLikeKind(kind)) {
+            setOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING)
+        } else {
+            setOf(kind)
+        }
+    }
+
+    private fun videoCompareKind(first: MediaKind, second: MediaKind): MediaKind {
+        return if (first == MediaKind.SCREEN_RECORDING || second == MediaKind.SCREEN_RECORDING) {
+            MediaKind.SCREEN_RECORDING
+        } else {
+            MediaKind.VIDEO
+        }
+    }
+
+    private fun isVideoLikeKind(kind: MediaKind): Boolean {
+        return kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING
     }
 
     private fun assetStateRevisionAndFingerprint(assetId: Long): AssetScanSnapshot? {
@@ -1889,6 +1953,9 @@ internal class ScanDatabase(context: Context) {
 
     companion object {
         /*
+         * v28 将视频和录屏作为同一视频族进行候选召回和最终重建；同时补充展示分页查询
+         * 索引，降低首页预览、Other 分页和分组过滤的 SQL 成本。
+         *
          * v27 将图片指纹尺寸和视频指纹模式纳入 fingerprint_algorithm_version，支持 SDK
          * 请求侧配置 imageFingerprintSize/videoFingerprintMode；同时将 Duplicate SHA-256
          * 默认延后计算，避免扫描主链路读全文件。
@@ -1912,7 +1979,7 @@ internal class ScanDatabase(context: Context) {
          */
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
         private const val ASSET_QUERY_PAGE_SIZE = 500
-        private const val FINGERPRINT_ALGORITHM_VERSION = 27
+        private const val FINGERPRINT_ALGORITHM_VERSION = 28
         private const val DEFAULT_IMAGE_FINGERPRINT_SIZE = 256
         private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
         private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
@@ -1961,10 +2028,10 @@ private data class OtherAssetQuerySpec(
 )
 
 /**
- * Other Photos 需要进一步拆分普通图片和聊天图片。
+ * Other 查询的聊天来源过滤条件。
  *
- * chat_source 在媒体枚举阶段由文件名、相册名和路径提示预计算并落库，
- * 这里直接走 SQL 过滤，避免首页为了统计数量加载全部 Other 图片。
+ * 当前产品分类不再单独输出 Chat Photos，但保留过滤能力，方便后续业务层或内部调试
+ * 需要按 chat_source 做二次展示时复用。
  */
 private enum class ChatFilter {
     ANY,
@@ -1990,6 +2057,7 @@ private data class AssetScanSnapshot(
 
 private data class GroupingFingerprint(
     val assetId: Long,
+    val kind: MediaKind,
     val hash: CombinedHash,
     val videoFingerprint: VideoFingerprint?
 ) {

@@ -520,8 +520,16 @@ internal class SimilarMediaScanner(context: Context) {
         val similarCandidates = metrics.measure("load_and_filter_video_candidates") {
             database.findVideoFingerprintCandidates(token.assetId, asset, videoFingerprintMode).filter { candidate ->
                 val candidateFingerprint = candidate.videoFingerprint ?: return@filter false
-                hasAnyFrameWithinCandidateDistance(fingerprint, candidateFingerprint, asset.kind) &&
-                    fingerprint.isSimilarTo(candidateFingerprint, asset.kind)
+                val compareKind = if (
+                    asset.kind == MediaKind.SCREEN_RECORDING ||
+                    candidate.asset.kind == MediaKind.SCREEN_RECORDING
+                ) {
+                    MediaKind.SCREEN_RECORDING
+                } else {
+                    MediaKind.VIDEO
+                }
+                hasAnyFrameWithinCandidateDistance(fingerprint, candidateFingerprint, compareKind) &&
+                    fingerprint.isSimilarTo(candidateFingerprint, compareKind)
             }
         }
         if (!metrics.measure("mark_video_fingerprint_done") {
