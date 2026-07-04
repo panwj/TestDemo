@@ -300,9 +300,6 @@ DUPLICATES
 SIMILAR_SCREENSHOTS
 SIMILAR_VIDEOS
 OTHER_SCREENSHOTS
-CHAT_PHOTOS
-SIMILAR_SCREEN_RECORDINGS
-OTHER_SCREEN_RECORDINGS
 OTHER_VIDEOS
 OTHER
 ```
@@ -314,7 +311,7 @@ OTHER
 这样每个分类仍能展示完整数量，但不会因为 Other、Other Screenshots 等大分类一次性
 读取几千张资源导致列表卡顿或 CursorWindow 压力。
 
-详情页推荐按当前入口只读取一个分类。对于 Other、Chat Photos、Other Videos 等平铺大类，
+详情页推荐按当前入口只读取一个分类。对于 Other、Other Videos 等平铺大类，
 先读取分类摘要，再分页加载资源：
 
 ```kotlin
@@ -533,9 +530,6 @@ when (category.type) {
     ProductCategoryType.SIMILAR_SCREENSHOTS -> ...
     ProductCategoryType.SIMILAR_VIDEOS -> ...
     ProductCategoryType.OTHER_SCREENSHOTS -> ...
-    ProductCategoryType.CHAT_PHOTOS -> ...
-    ProductCategoryType.SIMILAR_SCREEN_RECORDINGS -> ...
-    ProductCategoryType.OTHER_SCREEN_RECORDINGS -> ...
     ProductCategoryType.OTHER_VIDEOS -> ...
     ProductCategoryType.OTHER -> ...
 }
@@ -548,15 +542,12 @@ SIMILAR
 DUPLICATES
 SIMILAR_SCREENSHOTS
 SIMILAR_VIDEOS
-SIMILAR_SCREEN_RECORDINGS
 ```
 
 非分组类分类：
 
 ```text
 OTHER_SCREENSHOTS
-CHAT_PHOTOS
-OTHER_SCREEN_RECORDINGS
 OTHER_VIDEOS
 OTHER
 ```

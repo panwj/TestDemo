@@ -9,10 +9,10 @@ Demo 当前只扫描图片和视频两类 MediaStore 资源，并在应用内二
 
 | MediaStore 来源 | Demo 类型 | 结果分类 |
 | --- | --- | --- |
-| `MediaStore.Images` | `PHOTO` | Similar、Duplicates、Chat Photos、Other |
+| `MediaStore.Images` | `PHOTO` | Similar、Duplicates、Other |
 | `MediaStore.Images` | `SCREENSHOT` | Duplicates、Similar Screenshots、Other Screenshots |
 | `MediaStore.Video` | `VIDEO` | Similar Videos、Other Videos |
-| `MediaStore.Video` | `SCREEN_RECORDING` | Similar Screen Rec、Other Screen Rec |
+| `MediaStore.Video` | `SCREEN_RECORDING` | Similar Videos、Other Videos |
 
 当前版本不请求音频权限，不枚举音频资源，也不做音频相似扫描。
 
@@ -407,7 +407,7 @@ left.frames 逐帧遍历
 -> matchedCount >= 2 判定两个视频相似
 ```
 
-因此一段视频至少需要两个左侧有效帧各自命中候选视频中的有效帧，才进入 Similar Videos 或 Similar Screen Rec。
+因此一段视频至少需要两个左侧有效帧各自命中候选视频中的有效帧，才进入 Similar Videos；录屏也归并到该分类展示。
 
 ## 14. 分组策略
 

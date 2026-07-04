@@ -14,8 +14,8 @@ object ProductCategoryBuilder {
     /**
      * 将底层 SimilarGroup 列表转换成产品首页固定分类。
      *
-     * 数据库输出的是相似组、重复组和 Other 组；其中普通 Other Photos 与 Chat Photos
-     * 已在数据库查询阶段按 chat_source 拆分，这里只负责按固定 ProductCategoryType 顺序返回。
+     * 数据库输出的是相似组、重复组和 Other 组；这里仅负责按固定 ProductCategoryType
+     * 顺序聚合成首页分类，不参与指纹计算、候选召回或分组写入。
      */
     fun build(groups: List<SimilarGroup>): List<ProductCategory> {
         /*
@@ -36,11 +36,6 @@ object ProductCategoryBuilder {
             if (group.totalAssetCount < 2) null else group.copy(assets = assets)
         }.map(::sortGroupByMediaTimeDesc)
 
-        val otherPhotoGroups = normalizedGroups
-            .filter { it.category == GroupCategory.OTHER && it.kind == MediaKind.PHOTO }
-        val chatPhotoGroups = otherPhotoGroups.filter { it.title == RAW_CHAT_PHOTOS_TITLE }
-        val regularOtherPhotoGroups = otherPhotoGroups.filter { it.title != RAW_CHAT_PHOTOS_TITLE }
-
         return ProductCategoryType.entries.map { type ->
             val categoryGroups = when (type) {
                 ProductCategoryType.SIMILAR -> matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.PHOTO)
@@ -57,19 +52,25 @@ object ProductCategoryBuilder {
                 ProductCategoryType.SIMILAR_SCREENSHOTS ->
                     matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.SCREENSHOT)
                 ProductCategoryType.SIMILAR_VIDEOS ->
-                    matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.VIDEO)
+                    matched(
+                        normalizedGroups,
+                        GroupCategory.SIMILAR,
+                        setOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING)
+                    )
                 ProductCategoryType.OTHER_SCREENSHOTS ->
                     matched(normalizedGroups, GroupCategory.OTHER, MediaKind.SCREENSHOT)
-                ProductCategoryType.CHAT_PHOTOS ->
-                    synthetic(type.title, MediaKind.PHOTO, chatPhotoGroups)
-                ProductCategoryType.SIMILAR_SCREEN_RECORDINGS ->
-                    matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.SCREEN_RECORDING)
-                ProductCategoryType.OTHER_SCREEN_RECORDINGS ->
-                    matched(normalizedGroups, GroupCategory.OTHER, MediaKind.SCREEN_RECORDING)
                 ProductCategoryType.OTHER_VIDEOS ->
-                    matched(normalizedGroups, GroupCategory.OTHER, MediaKind.VIDEO)
+                    synthetic(
+                        type.title,
+                        MediaKind.VIDEO,
+                        matched(
+                            normalizedGroups,
+                            GroupCategory.OTHER,
+                            setOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING)
+                        )
+                    )
                 ProductCategoryType.OTHER ->
-                    synthetic(type.title, MediaKind.PHOTO, regularOtherPhotoGroups)
+                    synthetic(type.title, MediaKind.PHOTO, matched(normalizedGroups, GroupCategory.OTHER, MediaKind.PHOTO))
             }
             ProductCategory(type, categoryGroups)
         }
@@ -82,13 +83,25 @@ object ProductCategoryBuilder {
         groups: List<SimilarGroup>,
         category: GroupCategory,
         kind: MediaKind
+    ): List<SimilarGroup> = matched(groups, category, setOf(kind))
+
+    /**
+     * 取出指定分类和多个媒体类型的真实扫描分组。
+     *
+     * 该方法只改变产品展示归属，例如把录屏归并到视频分类；底层分组本身仍然保留原始
+     * MediaKind，不影响扫描识别和数据库写入。
+     */
+    private fun matched(
+        groups: List<SimilarGroup>,
+        category: GroupCategory,
+        kinds: Set<MediaKind>
     ): List<SimilarGroup> {
         /*
          * 首页和详情页默认按照“组内最新媒体时间”倒序展示扫描结果。
          * 这样刚拍摄/刚录制的资源会排在前面，也能与系统相册的浏览顺序保持一致。
          */
         return groups
-            .filter { it.category == category && it.kind == kind }
+            .filter { it.category == category && it.kind in kinds }
             .map(::sortGroupByMediaTimeDesc)
             .sortedWith(
                 compareByDescending<SimilarGroup> { it.latestAssetTimeMillis }
@@ -99,8 +112,8 @@ object ProductCategoryBuilder {
     /**
      * 把一组散落资产合成一个展示用分组。
      *
-     * Chat Photos、Other 这类产品分类不是数据库里的相似组，而是由一个或多个 Other 资源集合
-     * 合成的展示组。
+     * Other、Other Videos 这类产品分类不是数据库里的相似组，而是由一个或多个 Other 资源集合
+     * 合成的展示组，例如录屏会在展示层归并到 Other Videos。
      */
     private fun synthetic(
         title: String,
@@ -169,6 +182,4 @@ object ProductCategoryBuilder {
     private val MEDIA_TIME_DESC = compareByDescending<MediaAsset> { it.createdAt.time }
         .thenByDescending { it.dateAdded }
         .thenByDescending { it.id }
-
-    private const val RAW_CHAT_PHOTOS_TITLE = "Chat Photos"
 }

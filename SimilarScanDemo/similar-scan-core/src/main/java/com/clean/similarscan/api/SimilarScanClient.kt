@@ -44,7 +44,7 @@ interface SimilarScanClient : Closeable {
     /**
      * 分页读取非分组产品分类下的资源。
      *
-     * 适用于 Other Screenshots、Chat Photos、Other Videos、Other 等平铺列表详情页。
+     * 适用于 Other Screenshots、Other Videos、Other 等平铺列表详情页。
      * Similar/Duplicate 这类分组详情请使用 loadSimilarGroupAssets()。
      */
     fun loadProductCategoryAssets(

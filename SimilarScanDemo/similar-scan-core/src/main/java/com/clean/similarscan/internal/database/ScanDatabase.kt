@@ -1338,20 +1338,9 @@ internal class ScanDatabase(context: Context) {
                     groupLimit,
                     assetLimitPerGroup,
                     setOf(GroupCategory.SIMILAR),
-                    setOf(MediaKind.VIDEO)
-                )
-            ProductCategoryType.SIMILAR_SCREEN_RECORDINGS ->
-                loadMatchedGroups(
-                    groupLimit,
-                    assetLimitPerGroup,
-                    setOf(GroupCategory.SIMILAR),
-                    setOf(MediaKind.SCREEN_RECORDING)
+                    setOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING)
                 )
             ProductCategoryType.OTHER_SCREENSHOTS ->
-                listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
-            ProductCategoryType.CHAT_PHOTOS ->
-                listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
-            ProductCategoryType.OTHER_SCREEN_RECORDINGS ->
                 listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
             ProductCategoryType.OTHER_VIDEOS ->
                 listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
@@ -1423,16 +1412,7 @@ internal class ScanDatabase(context: Context) {
             listOf(MediaKind.PHOTO),
             setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
             assetLimit = assetLimitPerGroup,
-            chatFilter = ChatFilter.NON_CHAT
-        )
-        addOtherGroup(
-            result,
-            "Chat Photos",
-            MediaKind.PHOTO,
-            listOf(MediaKind.PHOTO),
-            setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
-            assetLimit = assetLimitPerGroup,
-            chatFilter = ChatFilter.CHAT_ONLY
+            chatFilter = ChatFilter.ANY
         )
         addOtherGroup(
             result,
@@ -1446,15 +1426,7 @@ internal class ScanDatabase(context: Context) {
             result,
             "Other Videos",
             MediaKind.VIDEO,
-            listOf(MediaKind.VIDEO),
-            setOf(GroupCategory.SIMILAR),
-            assetLimit = assetLimitPerGroup
-        )
-        addOtherGroup(
-            result,
-            "Other Screen Recordings",
-            MediaKind.SCREEN_RECORDING,
-            listOf(MediaKind.SCREEN_RECORDING),
+            listOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING),
             setOf(GroupCategory.SIMILAR),
             assetLimit = assetLimitPerGroup
         )
@@ -1520,23 +1492,10 @@ internal class ScanDatabase(context: Context) {
                 kinds = listOf(MediaKind.SCREENSHOT),
                 excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE)
             )
-            ProductCategoryType.CHAT_PHOTOS -> OtherAssetQuerySpec(
-                title = "Chat Photos",
-                groupKind = MediaKind.PHOTO,
-                kinds = listOf(MediaKind.PHOTO),
-                excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
-                chatFilter = ChatFilter.CHAT_ONLY
-            )
-            ProductCategoryType.OTHER_SCREEN_RECORDINGS -> OtherAssetQuerySpec(
-                title = "Other Screen Recordings",
-                groupKind = MediaKind.SCREEN_RECORDING,
-                kinds = listOf(MediaKind.SCREEN_RECORDING),
-                excludedCategories = setOf(GroupCategory.SIMILAR)
-            )
             ProductCategoryType.OTHER_VIDEOS -> OtherAssetQuerySpec(
                 title = "Other Videos",
                 groupKind = MediaKind.VIDEO,
-                kinds = listOf(MediaKind.VIDEO),
+                kinds = listOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING),
                 excludedCategories = setOf(GroupCategory.SIMILAR)
             )
             ProductCategoryType.OTHER -> OtherAssetQuerySpec(
@@ -1544,7 +1503,7 @@ internal class ScanDatabase(context: Context) {
                 groupKind = MediaKind.PHOTO,
                 kinds = listOf(MediaKind.PHOTO),
                 excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
-                chatFilter = ChatFilter.NON_CHAT
+                chatFilter = ChatFilter.ANY
             )
             else -> null
         }
@@ -1569,7 +1528,7 @@ internal class ScanDatabase(context: Context) {
      * 分页读取平铺产品分类资源。
      *
      * Similar/Duplicate 等分组类分类应使用 loadGroupAssetsPage() 按 groupId 读取。
-     * 这里仅服务 Other、Chat Photos、Other Videos 等非分组详情页。
+     * 这里仅服务 Other Screenshots、Other Videos、Other 等非分组详情页。
      */
     fun loadProductCategoryAssets(
         productCategoryType: ProductCategoryType,
@@ -1917,13 +1876,13 @@ internal class ScanDatabase(context: Context) {
                 MediaKind.PHOTO -> "Similar Photos"
                 MediaKind.SCREENSHOT -> "Similar Screenshots"
                 MediaKind.VIDEO -> "Similar Videos"
-                MediaKind.SCREEN_RECORDING -> "Similar Screen Recordings"
+                MediaKind.SCREEN_RECORDING -> "Similar Videos"
             }
             GroupCategory.OTHER -> when (kind) {
                 MediaKind.PHOTO -> "Other Photos"
                 MediaKind.SCREENSHOT -> "Other Screenshots"
                 MediaKind.VIDEO -> "Other Videos"
-                MediaKind.SCREEN_RECORDING -> "Other Screen Recordings"
+                MediaKind.SCREEN_RECORDING -> "Other Videos"
             }
         }
     }

@@ -8,10 +8,10 @@
 
 | MediaStore 来源 | 内部类型 | 主要输出分类 |
 | --- | --- | --- |
-| `MediaStore.Images` | `PHOTO` | Similar、Duplicates、Chat Photos、Other |
+| `MediaStore.Images` | `PHOTO` | Similar、Duplicates、Other |
 | `MediaStore.Images` | `SCREENSHOT` | Duplicates、Similar Screenshots、Other Screenshots |
 | `MediaStore.Video` | `VIDEO` | Similar Videos、Other Videos |
-| `MediaStore.Video` | `SCREEN_RECORDING` | Similar Screen Rec、Other Screen Rec |
+| `MediaStore.Video` | `SCREEN_RECORDING` | Similar Videos、Other Videos |
 
 当前不枚举音频，不做音频相似识别。SDK 内部模型位于 `com.clean.similarscan.internal.*`，接入方只应使用 `com.clean.similarscan.api.*`、`com.clean.similarscan.api.model.*` 和 `com.clean.similarscan.permission.*`。
 
@@ -890,9 +890,6 @@ DUPLICATES
 SIMILAR_SCREENSHOTS
 SIMILAR_VIDEOS
 OTHER_SCREENSHOTS
-CHAT_PHOTOS
-SIMILAR_SCREEN_RECORDINGS
-OTHER_SCREEN_RECORDINGS
 OTHER_VIDEOS
 OTHER
 ```

@@ -14,8 +14,8 @@ SDK 当前支持：
 - 枚举本机 `MediaStore.Images` 和 `MediaStore.Video`。
 - 区分普通照片、截图、普通视频、录屏。
 - 识别相同图片/截图。
-- 识别相似图片、相似截图、相似视频、相似录屏。
-- 输出 Similar、Duplicates、Similar Screenshots、Similar Videos、Other Screenshots、Chat Photos、Similar Screen Rec、Other Screen Rec、Other Videos、Other 等产品分类。
+- 识别相似图片、相似截图、相似视频和相似录屏；录屏在产品分类中归并到视频类展示。
+- 输出 Similar、Duplicates、Similar Screenshots、Similar Videos、Other Screenshots、Other Videos、Other 等产品分类。
 - SQLite 落库，支持缓存展示、断点续扫、增量扫描和资源未变化时复用旧指纹。
 - 使用删除中状态和 revision token，避免异步扫描把待删除资源重新写回结果。
 - 提供 UI 预览图加载接口，接入方无需访问内部 Bitmap 加载器。
