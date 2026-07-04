@@ -359,9 +359,52 @@ val kind: MediaKind
 val assets: List<MediaAsset>
 val totalAssetCount: Int
 val totalSizeBytes: Long
+val latestAssetTimeMillis: Long
 ```
 
 如果宿主直接使用 `loadGroups()`，需要自己处理产品分类顺序、Duplicate/Similar 互斥、Other 分类展示等。普通首页优先使用 `loadProductCategories()`。
+
+### 8.3 业务层可实现的典型场景
+
+SDK 对外 API 已经覆盖大部分图库清理业务场景，宿主产品不需要直接访问数据库表。
+
+| 业务场景 | 推荐 API | 说明 |
+| --- | --- | --- |
+| 首页展示分类卡片 | `loadProductCategories(previewAssetLimit = 2)` | 返回固定产品分类、真实数量、真实大小和少量预览图。 |
+| 首页扫描中实时刷新 | `loadProductCategories(previewAssetLimit = n)` | 可配合节流刷新；预览数量不影响真实统计值。 |
+| 进入单个分类详情 | `loadProductCategory(type, previewAssetLimit = 0)` | 先读取摘要，避免为了一个分类加载全部分类资源。 |
+| 平铺分类分页 | `loadProductCategoryAssets(type, offset, limit)` | 适用于 `OTHER_SCREENSHOTS`、`OTHER_VIDEOS`、`OTHER`。 |
+| 相似/相同分组详情 | `loadSimilarGroupAssets(groupId, offset, limit)` | 适用于 `SIMILAR`、`DUPLICATES`、`SIMILAR_SCREENSHOTS`、`SIMILAR_VIDEOS` 下的单个分组。 |
+| 大图预览左右切换 | `loadSimilarGroupAssets` 或 `loadProductCategoryAssets` | 先加载当前页，接近边界时继续分页。 |
+| 删除前保护扫描结果 | `markDeletePending(uris)` | 系统删除确认前调用，避免扫描任务复活待删除资源。 |
+| 删除确认后清理缓存 | `finalizeDelete(uris)` | 用户确认系统删除后调用。 |
+| 删除取消后恢复资源 | `restoreDeletePending(uris)` | 用户取消系统删除后调用，等待后续扫描重新校验。 |
+| 冷启动恢复悬挂状态 | `recoverStaleDeletePending()` | 处理 App 被杀后遗留的删除中状态。 |
+| UI 缩略图加载 | `loadBitmap(asset, thumbSize)` | 只用于展示预览，不影响扫描指纹 Bitmap。 |
+
+当前 `ProductCategoryType` 是展示分类，和底层入库类型不是一一对应：
+
+| ProductCategoryType | 底层资源 |
+| --- | --- |
+| `SIMILAR` | 普通照片相似组 |
+| `DUPLICATES` | 普通照片和截图的重复组 |
+| `SIMILAR_SCREENSHOTS` | 截图相似组 |
+| `SIMILAR_VIDEOS` | 普通视频和录屏相似组 |
+| `OTHER_SCREENSHOTS` | 未命中的截图 |
+| `OTHER_VIDEOS` | 未命中的普通视频和录屏 |
+| `OTHER` | 未命中的普通照片，包含聊天来源图片 |
+
+`MediaAsset.kind` 仍会暴露底层媒体类型：
+
+```text
+PHOTO
+SCREENSHOT
+VIDEO
+SCREEN_RECORDING
+```
+
+因此宿主业务如果需要在某个产品分类内部继续细分，例如在 `OTHER_VIDEOS` 中把录屏单独筛出，
+可以基于 `MediaAsset.kind == SCREEN_RECORDING` 自行过滤展示；这类二次展示不会影响 SDK 的扫描和分组结果。
 
 ## 9. UI 缩略图加载
 

@@ -15,6 +15,46 @@
 
 当前不枚举音频，不做音频相似识别。SDK 内部模型位于 `com.clean.similarscan.internal.*`，接入方只应使用 `com.clean.similarscan.api.*`、`com.clean.similarscan.api.model.*` 和 `com.clean.similarscan.permission.*`。
 
+### 1.1 当前功能矩阵
+
+| 功能 | 是否支持 | 主要入口/输出 |
+| --- | --- | --- |
+| 枚举系统图片 | 支持 | `MediaStore.Images` -> `PHOTO` 或 `SCREENSHOT` |
+| 枚举系统视频 | 支持 | `MediaStore.Video` -> `VIDEO` 或 `SCREEN_RECORDING` |
+| 枚举音频 | 不支持 | SDK 不请求音频权限，不读取音频媒体库 |
+| 图片/截图相同识别 | 支持 | 输出 `DUPLICATES` |
+| 普通图片相似识别 | 支持 | 输出 `SIMILAR` |
+| 截图相似识别 | 支持 | 输出 `SIMILAR_SCREENSHOTS` |
+| 视频/录屏相似识别 | 支持 | 输出 `SIMILAR_VIDEOS` |
+| 未命中截图 | 支持 | 输出 `OTHER_SCREENSHOTS` |
+| 未命中视频/录屏 | 支持 | 输出 `OTHER_VIDEOS` |
+| 未命中普通照片 | 支持 | 输出 `OTHER` |
+| 聊天图片来源识别 | 内部保留 | `MediaAsset.chatSource` 保留来源信息，但不再输出独立产品分类 |
+| 删除一致性 | 支持 | `markDeletePending/finalizeDelete/restoreDeletePending` |
+| 首页预览限流 | 支持 | `loadProductCategories(previewAssetLimit = n)` |
+| 详情分页 | 支持 | `loadProductCategoryAssets` / `loadSimilarGroupAssets` |
+
+### 1.2 媒体入库类型
+
+SDK 入库时使用内部 `MediaKind` 保存资源类型：
+
+```text
+PHOTO             普通图片
+SCREENSHOT        截图
+VIDEO             普通视频
+SCREEN_RECORDING  录屏
+```
+
+这四类是扫描识别层的稳定边界。图片、截图、视频、录屏可以使用不同阈值和候选召回策略；
+即使产品展示层把录屏归并到视频分类，数据库中的 `media_asset.type` 和 `similar_group.type`
+仍会保留 `SCREEN_RECORDING`，便于后续调整策略或做诊断。
+
+`MediaStore` 本身只稳定提供图片集合和视频集合。截图、录屏、聊天来源都由 SDK 进行二次分类：
+
+- `PHOTO / SCREENSHOT` 来自 `MediaStore.Images`。
+- `VIDEO / SCREEN_RECORDING` 来自 `MediaStore.Video`。
+- `chatSource` 是普通照片的附加来源标签，不改变 `MediaKind`。
+
 ## 2. 扫描主链路
 
 核心编排入口是 `SimilarMediaScanner.scan()`：
@@ -141,7 +181,7 @@ contains "mirror"
 contains "cast"
 ```
 
-聊天图片不是基础媒体类型，而是 `Other Photos` 的展示拆分。`MediaClassifier.chatSource()` 会在 name、bucket、relative_path 中识别：
+聊天图片不是基础媒体类型，而是普通照片上的来源标签。`MediaClassifier.chatSource()` 会在 name、bucket、relative_path 中识别：
 
 ```text
 whatsapp
@@ -150,6 +190,10 @@ snapchat
 messenger
 facebook
 ```
+
+当前产品分类不再单独输出 `Chat Photos`。聊天来源只作为 `MediaAsset.chatSource` 暴露给业务层，
+如果宿主产品需要恢复独立聊天图片入口，可以在业务层基于 `MediaAsset.chatSource` 自行二次过滤，
+或在 SDK 产品分类层重新增加对应分类。
 
 ## 5. 全量扫描、增量扫描和指纹复用
 
@@ -832,6 +876,35 @@ type     = PHOTO / SCREENSHOT / VIDEO / SCREEN_RECORDING
 
 `similar_group_item` 保存 group 与 asset 的关系。
 
+### 17.1 数据库读写边界
+
+`ScanDatabase` 是 SDK 内部数据库访问层，应用业务层不应直接调用。对外只通过
+`SimilarScanClient` 读取结果或提交删除状态。
+
+当前数据库方法大体分为两类：
+
+| 类型 | 典型方法 | 作用 |
+| --- | --- | --- |
+| 扫描写入 | `upsertAsset`、`upsertFingerprint`、`insertSimilarRelation`、`rebuildSimilarGroups` | 扫描、指纹、相似/相同候选和最终分组写入。 |
+| 展示读取 | `loadGroups`、`loadProductCategoryAssets`、`loadGroupAssetsPage` | 首页、分类详情、分组详情读取。 |
+| 删除状态 | `markDeletePending`、`finalizeDelete`、`restoreDeletePending`、`recoverStaleDeletePending` | 用户删除流程中的一致性保护。 |
+| 维护清理 | `removeAssetsNotSeenInScan`、`cleanupInvalidGroups` | 全量扫描对账和空分组清理。 |
+
+当前展示读取方法是合理的，原因：
+
+- 首页可以通过 `previewAssetLimit` 只读取少量预览资源，避免一次性加载大分类全部资源。
+- 分类和分组的真实数量、真实大小、最新媒体时间由 SQL 聚合获取，不依赖预览资源数量。
+- 平铺类详情使用 `loadProductCategoryAssets(type, offset, limit)` 分页读取。
+- 相似/相同分组详情使用 `loadGroupAssetsPage(groupId, offset, limit)` 分页读取。
+- DB 写入路径和展示读取路径没有混在对外 API 中，业务层无法直接修改指纹或分组表。
+
+仍需注意：
+
+- `ScanDatabase` 当前同时承载写入、读取、删除状态和维护清理，内部职责较多；作为 SDK 内部类可以接受，
+  但如果后续数据库逻辑继续膨胀，可以拆成 `ScanWriteStore`、`ScanReadStore`、`DeleteStateStore`。
+- 不建议把 `ScanDatabase` 暴露给宿主业务层，否则会破坏扫描状态、删除状态和分组结果的一致性。
+- 新增展示接口时优先从 `SimilarScanClient` 暴露稳定 DTO，不直接暴露 SQL、Cursor 或 Room Entity。
+
 ## 18. 删除一致性
 
 删除流程通过 `state + revision + AssetScanToken` 防止异步扫描结果复活用户删除的资源。
@@ -893,6 +966,27 @@ OTHER_SCREENSHOTS
 OTHER_VIDEOS
 OTHER
 ```
+
+### 19.1 ProductCategoryType 聚合规则
+
+`ProductCategoryType` 是产品展示分类，不等同于数据库中的 `MediaKind`。当前聚合规则如下：
+
+| ProductCategoryType | grouped | 底层来源 |
+| --- | --- | --- |
+| `SIMILAR` | true | `GroupCategory.SIMILAR + MediaKind.PHOTO` |
+| `DUPLICATES` | true | `GroupCategory.DUPLICATE + PHOTO/SCREENSHOT` |
+| `SIMILAR_SCREENSHOTS` | true | `GroupCategory.SIMILAR + SCREENSHOT` |
+| `SIMILAR_VIDEOS` | true | `GroupCategory.SIMILAR + VIDEO/SCREEN_RECORDING` |
+| `OTHER_SCREENSHOTS` | false | 未进入 Similar/Duplicate 的 `SCREENSHOT` |
+| `OTHER_VIDEOS` | false | 未进入 Similar 的 `VIDEO/SCREEN_RECORDING` |
+| `OTHER` | false | 未进入 Similar/Duplicate 的 `PHOTO`，包含聊天来源图片 |
+
+说明：
+
+- `grouped = true` 表示分类下包含多个真实相似/相同分组，详情页通常先展示分组，再按 `groupId` 分页读取组内资源。
+- `grouped = false` 表示平铺类资源集合，详情页可直接按分类分页读取资源。
+- 录屏仍以 `SCREEN_RECORDING` 入库和识别，但产品层归并到视频分类。
+- 聊天图片不再单独成为产品分类，`chatSource` 字段仍保留给业务层自定义使用。
 
 展示层会再次做 Duplicate/Similar 互斥防御：
 
