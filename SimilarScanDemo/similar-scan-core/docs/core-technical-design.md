@@ -1007,6 +1007,8 @@ OTHER
 - 视频相似候选按视频族召回，`VIDEO` 与 `SCREEN_RECORDING` 可以互相进入候选；最终仍需通过多帧 `dHash + colorHash` 精判。
 - 如果视频候选中任一方是录屏，精判阶段使用更严格的录屏阈值，降低静态 UI/录屏内容误合并。
 - 聊天图片不再单独成为产品分类，`chatSource` 字段仍保留给业务层自定义使用。
+- `ProductCategory.itemCount`、`ProductCategory.totalSize`、`SimilarGroup.totalAssetCount`、`SimilarGroup.totalSizeBytes` 都来自完整分组聚合，不受 `previewAssetLimit` 影响。
+- `ProductCategory.assets` 和 `SimilarGroup.assets` 是当前接口返回的展示样本；首页预览场景中不能把它们当作完整资源列表。
 
 展示层会再次做 Duplicate/Similar 互斥防御：
 

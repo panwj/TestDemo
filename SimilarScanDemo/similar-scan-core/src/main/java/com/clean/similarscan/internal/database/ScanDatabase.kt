@@ -31,6 +31,7 @@ import java.util.Date
 import java.util.Locale
 
 private const val DB_NAME = "similar_scan.db"
+// 数据库结构和指纹算法缓存版本同步演进；版本变化会让旧扫描缓存按新规则重新生成。
 private const val DB_VERSION = 28
 
 /**
@@ -568,6 +569,11 @@ internal class ScanDatabase(context: Context) {
                 it == MediaKind.SCREEN_RECORDING
         }
         if (supportedKinds.isEmpty()) return
+        /*
+         * 最终重建阶段以“产品需要独立展示的扫描族”为单位执行：
+         * - 图片和截图保持独立，避免普通照片与截图互相混组；
+         * - 普通视频与录屏同属视频族，可以互相召回和重建，减少 Other Videos 漏召回。
+         */
         val groupingKinds = linkedSetOf<MediaKind>().apply {
             if (MediaKind.PHOTO in supportedKinds) add(MediaKind.PHOTO)
             if (MediaKind.SCREENSHOT in supportedKinds) add(MediaKind.SCREENSHOT)
@@ -1597,6 +1603,13 @@ internal class ScanDatabase(context: Context) {
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
     }
 
+    /**
+     * 视频候选召回使用的视频族范围。
+     *
+     * 普通视频与录屏在系统媒体库中都属于 video 媒体，很多设备的录屏封面、时长和
+     * 内容结构与普通视频接近。候选阶段允许二者互相召回，后续精判仍会根据
+     * videoCompareKind() 选择更严格的阈值，避免简单放宽导致误合并。
+     */
     private fun candidateKindsForVideo(kind: MediaKind): Set<MediaKind> {
         return if (isVideoLikeKind(kind)) {
             setOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING)
@@ -1605,6 +1618,13 @@ internal class ScanDatabase(context: Context) {
         }
     }
 
+    /**
+     * 最终重建时同一轮处理的媒体类型集合。
+     *
+     * 该方法只影响最终 Similar 分组的重建边界，不改变资源入库时保存的原始 kind。
+     * 因此产品层可以把录屏展示在 Similar Videos/Other Videos，业务层仍能从 asset.kind
+     * 识别资源本身是普通视频还是录屏。
+     */
     private fun groupingKindsForFinalRebuild(kind: MediaKind): Set<MediaKind> {
         return if (isVideoLikeKind(kind)) {
             setOf(MediaKind.VIDEO, MediaKind.SCREEN_RECORDING)
@@ -1613,6 +1633,12 @@ internal class ScanDatabase(context: Context) {
         }
     }
 
+    /**
+     * 选择视频两两精判时使用的阈值类型。
+     *
+     * 只要任一资源是录屏，就使用 SCREEN_RECORDING 的严格阈值；只有双方都是普通视频时
+     * 才使用 VIDEO 阈值。这样候选召回可以覆盖视频族，最终判断仍保持保守。
+     */
     private fun videoCompareKind(first: MediaKind, second: MediaKind): MediaKind {
         return if (first == MediaKind.SCREEN_RECORDING || second == MediaKind.SCREEN_RECORDING) {
             MediaKind.SCREEN_RECORDING
@@ -1621,6 +1647,7 @@ internal class ScanDatabase(context: Context) {
         }
     }
 
+    /** 判断是否属于视频族。当前视频族包含普通视频和录屏。 */
     private fun isVideoLikeKind(kind: MediaKind): Boolean {
         return kind == MediaKind.VIDEO || kind == MediaKind.SCREEN_RECORDING
     }

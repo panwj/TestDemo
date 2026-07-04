@@ -311,6 +311,11 @@ OTHER
 这样每个分类仍能展示完整数量，但不会因为 Other、Other Screenshots 等大分类一次性
 读取几千张资源导致列表卡顿或 CursorWindow 压力。
 
+`ProductCategory.assets` 只是当前接口实际返回的资源样本。首页传入
+`previewAssetLimit = 2` 时，它不是完整分类资源列表；业务层不能用 `assets.size`
+当作分类数量，也不能直接拿它做完整删除列表。完整数量应读取 `itemCount`，完整详情
+应继续使用分页接口加载。
+
 详情页推荐按当前入口只读取一个分类。对于 Other、Other Videos 等平铺大类，
 先读取分类摘要，再分页加载资源：
 
@@ -344,6 +349,10 @@ val page = client.loadSimilarGroupAssets(
 
 `SimilarGroup.latestAssetTimeMillis` 来自数据库对完整分组的 `MAX(created_at/date_added)`
 聚合，首页排序不依赖 `previewAssetLimit` 返回的少量预览资源。
+
+`SimilarGroup.assets` 与 `ProductCategory.assets` 一样受预览数量影响；`totalAssetCount`
+和 `totalSizeBytes` 才是完整组的真实统计值。进入分组详情页时，推荐用
+`loadSimilarGroupAssets(groupId, offset, limit)` 逐页加载组内完整资源。
 
 ### 8.2 原始分组
 
@@ -410,6 +419,10 @@ SCREEN_RECORDING
 
 因此宿主业务如果需要在某个产品分类内部继续细分，例如在 `OTHER_VIDEOS` 中把录屏单独筛出，
 可以基于 `MediaAsset.kind == SCREEN_RECORDING` 自行过滤展示；这类二次展示不会影响 SDK 的扫描和分组结果。
+
+视频相似识别的候选召回以“视频族”为边界，`VIDEO` 与 `SCREEN_RECORDING` 可以互相进入候选。
+最终精判仍按多帧 `dHash + colorHash` 执行；只要任一候选是录屏，就使用更严格的录屏阈值。
+所以产品展示层归并视频/录屏，不等于扫描阶段简单混用普通照片阈值。
 
 ## 9. UI 缩略图加载
 
