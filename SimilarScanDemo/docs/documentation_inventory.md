@@ -9,6 +9,7 @@
 docs/
   current_technical_solution.md        当前 Demo 技术方案
   media_scan_business_constraints.md   当前业务边界和 Case
+  issue_prevention_checklist.md        问题记录与规避清单
   documentation_inventory.md           当前文档索引
   archive/                             历史文档归档，不作为当前实现依据
 
@@ -28,6 +29,7 @@ similar-scan-core/
 | `similar-scan-core/docs/integration-guide.md` | 当前 | SDK 接入、权限申请、后台扫描、删除流程和宿主职责 |
 | `docs/current_technical_solution.md` | 当前 | Demo 基于 SDK 的当前扫描、展示和竞品兼容方案 |
 | `docs/media_scan_business_constraints.md` | 当前 | 权限、部分授权、扫描中断、系统干扰和删除确认等业务 Case |
+| `docs/issue_prevention_checklist.md` | 当前 | 数据库崩溃、异步生命周期、分页展示、权限链路和外部干扰等问题记录与规避清单 |
 | `docs/documentation_inventory.md` | 当前 | 文档分层、归档说明和维护规则 |
 
 ## 3. 历史归档文档

@@ -20,7 +20,8 @@ class GroupAdapter(
     private val selectedUris: MutableSet<String>,
     private val bestUris: MutableSet<String>,
     private val onAssetClick: (SimilarGroup, Int) -> Unit,
-    private val onAssetSelect: (SimilarGroup, Int) -> Unit
+    private val onAssetSelect: (SimilarGroup, Int) -> Unit,
+    private val onGroupLoadMore: (SimilarGroup) -> Unit
 ) : ListAdapter<SimilarGroup, GroupAdapter.GroupViewHolder>(GroupDiffCallback()) {
 
     private val thumbAdapters = mutableListOf<ThumbAdapter>()
@@ -56,30 +57,42 @@ class GroupAdapter(
         private val title: TextView = itemView.findViewById(R.id.detailGroupTitle)
         private val size: TextView = itemView.findViewById(R.id.detailGroupSize)
         private val horizontalRecycler: RecyclerView = itemView.findViewById(R.id.detailGroupHorizontalRecycler)
+        private val horizontalLayoutManager = LinearLayoutManager(
+            activity,
+            LinearLayoutManager.HORIZONTAL,
+            false
+        )
         private var thumbAdapter: ThumbAdapter? = null
         private var currentGroup: SimilarGroup? = null
 
         init {
-            horizontalRecycler.layoutManager = LinearLayoutManager(
-                activity,
-                LinearLayoutManager.HORIZONTAL,
-                false
-            )
+            horizontalRecycler.layoutManager = horizontalLayoutManager
             horizontalRecycler.setHasFixedSize(true)
             horizontalRecycler.itemAnimator = null
+            horizontalRecycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    super.onScrolled(recyclerView, dx, dy)
+                    if (dx <= 0) return
+                    val group = currentGroup ?: return
+                    if (group.assets.size >= group.totalAssetCount) return
+                    val lastVisible = horizontalLayoutManager.findLastVisibleItemPosition()
+                    if (lastVisible >= group.assets.size - GROUP_LOAD_MORE_THRESHOLD) {
+                        onGroupLoadMore(group)
+                    }
+                }
+            })
         }
 
         fun bind(group: SimilarGroup) {
             currentGroup = group
 
-            val totalSize = group.assets.sumOf { it.size }
             val label = if (group.title.contains("Duplicate", ignoreCase = true)) {
-                "${group.assets.size} Duplicates"
+                "${group.totalAssetCount} Duplicates"
             } else {
-                "${group.assets.size} Similar"
+                "${group.totalAssetCount} Similar"
             }
             title.text = label
-            size.text = FormatUtils.formatBytes(totalSize)
+            size.text = FormatUtils.formatBytes(group.totalSizeBytes)
 
             val bestAssetUri = group.assets.firstOrNull { bestUris.contains(it.uri.toString()) }?.uri?.toString()
 
@@ -107,8 +120,14 @@ class GroupAdapter(
         }
 
         override fun areContentsTheSame(oldItem: SimilarGroup, newItem: SimilarGroup): Boolean {
-            return oldItem.id == newItem.id && oldItem.assets.size == newItem.assets.size
+            return oldItem.id == newItem.id &&
+                oldItem.assets.size == newItem.assets.size &&
+                oldItem.totalAssetCount == newItem.totalAssetCount
         }
+    }
+
+    private companion object {
+        const val GROUP_LOAD_MORE_THRESHOLD = 4
     }
 }
 

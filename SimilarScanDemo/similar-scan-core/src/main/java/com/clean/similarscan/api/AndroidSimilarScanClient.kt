@@ -62,6 +62,23 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
             ?.toApi()
     }
 
+    override fun loadProductCategoryAssets(
+        type: ProductCategoryType,
+        offset: Int,
+        limit: Int
+    ): List<MediaAsset> {
+        val internalType = com.clean.similarscan.internal.model.ProductCategoryType.valueOf(type.name)
+        return scanner.loadProductCategoryAssets(internalType, offset, limit).map { it.toApi() }
+    }
+
+    override fun loadSimilarGroupAssets(
+        groupId: Long,
+        offset: Int,
+        limit: Int
+    ): List<MediaAsset> {
+        return scanner.loadSimilarGroupAssets(groupId, offset, limit).map { it.toApi() }
+    }
+
     override fun loadBitmap(asset: MediaAsset, thumbSize: Int): Bitmap? {
         return scanner.loadBitmap(asset.toInternal(), thumbSize)
     }

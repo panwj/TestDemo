@@ -51,9 +51,8 @@ object ProductCategoryBuilder {
                     }
                     .map(::sortGroupByMediaTimeDesc)
                     .sortedWith(
-                        compareByDescending<SimilarGroup> { group ->
-                            group.assets.maxOfOrNull { it.createdAt.time } ?: 0L
-                        }.thenByDescending { it.id }
+                        compareByDescending<SimilarGroup> { it.latestAssetTimeMillis }
+                            .thenByDescending { it.id }
                     )
                 ProductCategoryType.SIMILAR_SCREENSHOTS ->
                     matched(normalizedGroups, GroupCategory.SIMILAR, MediaKind.SCREENSHOT)
@@ -92,9 +91,8 @@ object ProductCategoryBuilder {
             .filter { it.category == category && it.kind == kind }
             .map(::sortGroupByMediaTimeDesc)
             .sortedWith(
-                compareByDescending<SimilarGroup> { group ->
-                    group.assets.maxOfOrNull { it.createdAt.time } ?: 0L
-                }.thenByDescending { it.id }
+                compareByDescending<SimilarGroup> { it.latestAssetTimeMillis }
+                    .thenByDescending { it.id }
             )
     }
 
@@ -120,7 +118,8 @@ object ProductCategoryBuilder {
                 kind = kind,
                 assets = sortedAssets,
                 totalAssetCount = groups.sumOf { it.totalAssetCount },
-                totalSizeBytes = groups.sumOf { it.totalSizeBytes }
+                totalSizeBytes = groups.sumOf { it.totalSizeBytes },
+                latestAssetTimeMillis = groups.maxOfOrNull { it.latestAssetTimeMillis } ?: 0L
             )
         )
     }

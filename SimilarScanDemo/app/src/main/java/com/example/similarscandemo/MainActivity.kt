@@ -294,10 +294,21 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         renderGeneration.incrementAndGet()
-        renderExecutor.shutdownNow()
+        mainHandler.removeCallbacks(throttledRender)
+        mainHandler.removeCallbacks(mediaChangedScan)
         if (::scanClient.isInitialized) {
-            scanClient.close()
+            /*
+             * renderExecutor 中可能还有正在读取 SQLite 的首页刷新任务。不能在主线程立即
+             * close client，否则后台任务会继续访问已经关闭的数据库并崩溃。把 close 排到
+             * 同一个单线程队列末尾，确保已提交读取任务先自然结束。
+             */
+            runCatching {
+                renderExecutor.execute { scanClient.close() }
+            }.onFailure {
+                scanClient.close()
+            }
         }
+        renderExecutor.shutdown()
         super.onDestroy()
     }
 

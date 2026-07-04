@@ -11,5 +11,8 @@ data class SimilarGroup(
     val kind: MediaKind,
     val assets: List<MediaAsset>,
     val totalAssetCount: Int = assets.size,
-    val totalSizeBytes: Long = assets.sumOf { it.size }
+    val totalSizeBytes: Long = assets.sumOf { it.size },
+    val latestAssetTimeMillis: Long = assets.maxOfOrNull {
+        maxOf(it.createdAt.time, it.dateAdded * 1000L)
+    } ?: 0L
 )

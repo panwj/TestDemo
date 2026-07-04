@@ -53,9 +53,14 @@ class GroupDetailActivity : Activity() {
     private val selectedUris = linkedSetOf<String>()
     private val bestUris = linkedSetOf<String>()
     private val pendingDeleteUris = linkedSetOf<String>()
+    private val flatAssets = mutableListOf<MediaAsset>()
+    private val knownAssetsByUri = linkedMapOf<String, MediaAsset>()
+    private val loadingGroupIds = hashSetOf<Long>()
     private var selectionInitialized = false
     private var receiverRegistered = false
     private var gridLayoutInitialized = false
+    private var flatAssetsLoading = false
+    private var flatAssetsLoadedAll = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val reloadExecutor = Executors.newSingleThreadExecutor()
     private val reloadGeneration = AtomicInteger(0)
@@ -122,10 +127,18 @@ class GroupDetailActivity : Activity() {
 
     override fun onDestroy() {
         reloadGeneration.incrementAndGet()
-        reloadExecutor.shutdownNow()
         if (::scanClient.isInitialized) {
-            scanClient.close()
+            /*
+             * 详情页的分类刷新/分页加载都在 reloadExecutor 中读 SQLite。将 close 排到队列
+             * 末尾，避免仍在执行的分页查询访问已经关闭的数据库。
+             */
+            runCatching {
+                reloadExecutor.execute { scanClient.close() }
+            }.onFailure {
+                scanClient.close()
+            }
         }
+        reloadExecutor.shutdown()
         super.onDestroy()
     }
 
@@ -156,9 +169,10 @@ class GroupDetailActivity : Activity() {
     }
 
     private fun loadLatestCategoryWithRetry(): ProductCategory? {
+        val previewAssetLimit = if (categoryType.grouped) GROUP_ASSET_PAGE_SIZE else 0
         repeat(DB_READ_RETRY_COUNT) { attempt ->
             try {
-                return scanClient.loadProductCategory(categoryType)
+                return scanClient.loadProductCategory(categoryType, previewAssetLimit)
             } catch (_: SQLiteDatabaseLockedException) {
                 Thread.sleep(DB_READ_RETRY_DELAY_MS * (attempt + 1))
             } catch (_: IllegalStateException) {
@@ -166,14 +180,22 @@ class GroupDetailActivity : Activity() {
             }
         }
         return runCatching {
-            scanClient.loadProductCategory(categoryType)
+            scanClient.loadProductCategory(categoryType, previewAssetLimit)
         }.getOrNull()
     }
 
     private fun applyLatestCategory(latestCategory: ProductCategory) {
         category = latestCategory
-        val activeUris = category.assets.mapTo(hashSetOf()) { it.uri.toString() }
-        selectedUris.retainAll(activeUris)
+        if (category.type.grouped) {
+            val activeUris = category.assets.mapTo(hashSetOf()) { it.uri.toString() }
+            selectedUris.retainAll(activeUris)
+        } else {
+            flatAssets.clear()
+            knownAssetsByUri.clear()
+            flatAssetsLoading = false
+            flatAssetsLoadedAll = category.itemCount == 0
+        }
+        loadingGroupIds.clear()
         bestUris.clear()
         category.groups.forEach { group ->
             bestAsset(group.assets)?.let { bestUris += it.uri.toString() }
@@ -185,6 +207,9 @@ class GroupDetailActivity : Activity() {
         findViewById<TextView>(R.id.detailSubtitle).text =
             "${category.itemCount} items · ${FormatUtils.formatBytes(category.totalSize)}"
         renderContent()
+        if (!category.type.grouped) {
+            loadNextFlatAssetPage(reset = true)
+        }
     }
 
     private fun initializeRecommendedSelection() {
@@ -226,6 +251,9 @@ class GroupDetailActivity : Activity() {
                     },
                     onAssetSelect = { group, position ->
                         toggleAsset(group.assets[position])
+                    },
+                    onGroupLoadMore = { group ->
+                        loadNextGroupAssetPage(group)
                     }
                 )
                 groupRecycler.adapter = groupAdapter
@@ -233,10 +261,20 @@ class GroupDetailActivity : Activity() {
             groupRecycler.visibility = View.VISIBLE
             groupAdapter?.submitList(displayedGroups)
         } else {
-            val sortedAssets = MediaDisplaySorter.newestFirst(category.assets)
             if (!gridLayoutInitialized) {
                 val spacing = (8 * resources.displayMetrics.density).toInt()
-                groupRecycler.layoutManager = GridLayoutManager(this, 2)
+                groupRecycler.layoutManager = GridLayoutManager(this, 2).also { layoutManager ->
+                    groupRecycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                        override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                            super.onScrolled(recyclerView, dx, dy)
+                            if (dy <= 0 || category.type.grouped) return
+                            val lastVisible = layoutManager.findLastVisibleItemPosition()
+                            if (lastVisible >= flatAssets.size - LOAD_MORE_THRESHOLD) {
+                                loadNextFlatAssetPage(reset = false)
+                            }
+                        }
+                    })
+                }
                 groupRecycler.addItemDecoration(GridAdapter.GridSpacingItemDecoration(spacing))
                 groupRecycler.itemAnimator = null
                 gridLayoutInitialized = true
@@ -247,7 +285,7 @@ class GroupDetailActivity : Activity() {
                     activity = this,
                     selectedUris = selectedUris,
                     onItemClick = { asset ->
-                        val currentAssets = MediaDisplaySorter.newestFirst(category.assets)
+                        val currentAssets = flatAssets.toList()
                         openPreviewFromFlatList(
                             currentAssets,
                             currentAssets.indexOfFirst { it.uri == asset.uri }
@@ -259,9 +297,102 @@ class GroupDetailActivity : Activity() {
                 )
                 groupRecycler.adapter = gridAdapter
             }
-            gridAdapter?.submitList(sortedAssets)
+            gridAdapter?.submitList(flatAssets.toList())
         }
         updateSelectionControls()
+    }
+
+    /**
+     * 相似/重复分组按 groupId 分页追加横向资源。
+     *
+     * 这只改变详情页读取方式，不改变 SDK 已经生成的相似组关系。
+     */
+    private fun loadNextGroupAssetPage(group: SimilarGroup) {
+        if (!::category.isInitialized || !category.type.grouped) return
+        if (group.id <= 0L || group.assets.size >= group.totalAssetCount) return
+        if (!loadingGroupIds.add(group.id)) return
+        val generation = reloadGeneration.get()
+        val offset = group.assets.size
+        runCatching {
+            reloadExecutor.execute {
+                val page = runCatching {
+                    scanClient.loadSimilarGroupAssets(
+                        groupId = group.id,
+                        offset = offset,
+                        limit = GROUP_ASSET_PAGE_SIZE
+                    )
+                }.getOrDefault(emptyList())
+                mainHandler.post {
+                    loadingGroupIds.remove(group.id)
+                    if (generation != reloadGeneration.get() || isFinishing || isDestroyed) return@post
+                    if (page.isEmpty()) return@post
+                    val updatedGroups = category.groups.map { current ->
+                        if (current.id != group.id) return@map current
+                        val mergedAssets = (current.assets + page).distinctBy { it.uri }
+                        if (selectionInitialized) {
+                            val bestUri = bestUris.firstOrNull { best ->
+                                mergedAssets.any { it.uri.toString() == best }
+                            }
+                            page.filterNot { it.uri.toString() == bestUri }
+                                .forEach { selectedUris += it.uri.toString() }
+                        }
+                        current.copy(assets = MediaDisplaySorter.newestFirst(mergedAssets))
+                    }
+                    category = category.copy(groups = updatedGroups)
+                    groupAdapter?.submitList(sortedGroups())
+                    updateSelectionControls()
+                }
+            }
+        }.onFailure {
+            loadingGroupIds.remove(group.id)
+        }
+    }
+
+    /**
+     * 平铺类分类按页加载资源，避免 Other 等大分类详情页一次性把全部资源放入内存。
+     *
+     * category 中保留完整数量/大小统计，flatAssets 只保存当前已经加载到 UI 的页面数据。
+     */
+    private fun loadNextFlatAssetPage(reset: Boolean) {
+        if (!::category.isInitialized || category.type.grouped) return
+        if (flatAssetsLoading || flatAssetsLoadedAll) return
+        val generation = reloadGeneration.get()
+        val offset = if (reset) 0 else flatAssets.size
+        flatAssetsLoading = true
+        runCatching {
+            reloadExecutor.execute {
+                val page = runCatching {
+                    scanClient.loadProductCategoryAssets(
+                        type = categoryType,
+                        offset = offset,
+                        limit = DETAIL_ASSET_PAGE_SIZE
+                    )
+                }.getOrDefault(emptyList())
+                mainHandler.post {
+                    if (generation != reloadGeneration.get() || isFinishing || isDestroyed) return@post
+                    if (reset) {
+                        flatAssets.clear()
+                        knownAssetsByUri.clear()
+                    }
+                    page.forEach { asset ->
+                        val key = asset.uri.toString()
+                        if (!knownAssetsByUri.containsKey(key)) {
+                            flatAssets += asset
+                        }
+                        knownAssetsByUri[key] = asset
+                    }
+                    val activeLoadedUris = knownAssetsByUri.keys
+                    selectedUris.retainAll(activeLoadedUris)
+                    flatAssetsLoadedAll = page.size < DETAIL_ASSET_PAGE_SIZE ||
+                        flatAssets.size >= category.itemCount
+                    flatAssetsLoading = false
+                    gridAdapter?.submitList(flatAssets.toList())
+                    updateSelectionControls()
+                }
+            }
+        }.onFailure {
+            flatAssetsLoading = false
+        }
     }
 
     private fun sortedGroups(): List<SimilarGroup> {
@@ -285,7 +416,8 @@ class GroupDetailActivity : Activity() {
 
     private fun toggleSelectAll() {
         if (!::category.isInitialized) return
-        val allUris = category.assets.map { it.uri.toString() }
+        val selectableAssets = currentSelectableAssets()
+        val allUris = selectableAssets.map { it.uri.toString() }
         if (selectedUris.size == allUris.size) selectedUris.clear()
         else selectedUris.addAll(allUris)
         renderContent()
@@ -293,10 +425,11 @@ class GroupDetailActivity : Activity() {
 
     private fun updateSelectionControls() {
         if (!::category.isInitialized) return
-        val selectedAssets = category.assets.filter { selectedUris.contains(it.uri.toString()) }
+        val selectableAssets = currentSelectableAssets()
+        val selectedAssets = selectableAssets.filter { selectedUris.contains(it.uri.toString()) }
         val selectedSize = selectedAssets.sumOf { it.size }
         selectAllButton.text =
-            if (selectedUris.size == category.assets.size && category.assets.isNotEmpty()) {
+            if (selectedUris.size == selectableAssets.size && selectableAssets.isNotEmpty()) {
                 "Deselect All"
             } else {
                 "Select All"
@@ -308,6 +441,10 @@ class GroupDetailActivity : Activity() {
         } else {
             "Delete ${selectedAssets.size} · Save ${FormatUtils.formatBytes(selectedSize)}"
         }
+    }
+
+    private fun currentSelectableAssets(): List<MediaAsset> {
+        return if (category.type.grouped) category.assets else flatAssets
     }
 
     private fun requestDeleteSelected() {
@@ -407,6 +544,9 @@ class GroupDetailActivity : Activity() {
         private const val STATE_PENDING_DELETE_URIS = "pending_delete_uris"
         private const val DB_READ_RETRY_COUNT = 5
         private const val DB_READ_RETRY_DELAY_MS = 80L
+        private const val DETAIL_ASSET_PAGE_SIZE = 120
+        private const val GROUP_ASSET_PAGE_SIZE = 60
+        private const val LOAD_MORE_THRESHOLD = 12
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")

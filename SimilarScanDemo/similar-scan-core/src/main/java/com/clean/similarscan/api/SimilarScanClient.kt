@@ -41,6 +41,25 @@ interface SimilarScanClient : Closeable {
         previewAssetLimit: Int = Int.MAX_VALUE
     ): ProductCategory?
 
+    /**
+     * 分页读取非分组产品分类下的资源。
+     *
+     * 适用于 Other Screenshots、Chat Photos、Other Videos、Other 等平铺列表详情页。
+     * Similar/Duplicate 这类分组详情请使用 loadSimilarGroupAssets()。
+     */
+    fun loadProductCategoryAssets(
+        type: ProductCategoryType,
+        offset: Int,
+        limit: Int
+    ): List<MediaAsset>
+
+    /** 分页读取某个相似/相同分组下的资源，用于分组详情或大图预览按需加载。 */
+    fun loadSimilarGroupAssets(
+        groupId: Long,
+        offset: Int,
+        limit: Int
+    ): List<MediaAsset>
+
     /** 为预览/列表加载媒体缩略图；扫描指纹 Bitmap 加载仍在核心扫描内部完成。 */
     fun loadBitmap(asset: MediaAsset, thumbSize: Int = 1024): Bitmap?
 

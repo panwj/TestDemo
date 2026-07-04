@@ -87,7 +87,8 @@ internal fun InternalSimilarGroup.toApi(): SimilarGroup {
         kind = kind.toApi(),
         assets = assets.map { it.toApi() },
         totalAssetCount = totalAssetCount,
-        totalSizeBytes = totalSizeBytes
+        totalSizeBytes = totalSizeBytes,
+        latestAssetTimeMillis = latestAssetTimeMillis
     )
 }
 

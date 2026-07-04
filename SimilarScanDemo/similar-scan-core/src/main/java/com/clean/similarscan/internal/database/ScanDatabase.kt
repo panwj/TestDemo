@@ -1348,47 +1348,15 @@ internal class ScanDatabase(context: Context) {
                     setOf(MediaKind.SCREEN_RECORDING)
                 )
             ProductCategoryType.OTHER_SCREENSHOTS ->
-                listOfOtherGroup(
-                    title = "Other Screenshots",
-                    groupKind = MediaKind.SCREENSHOT,
-                    kinds = listOf(MediaKind.SCREENSHOT),
-                    excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
-                    assetLimit = assetLimitPerGroup
-                )
+                listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
             ProductCategoryType.CHAT_PHOTOS ->
-                listOfOtherGroup(
-                    title = "Chat Photos",
-                    groupKind = MediaKind.PHOTO,
-                    kinds = listOf(MediaKind.PHOTO),
-                    excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
-                    assetLimit = assetLimitPerGroup,
-                    chatFilter = ChatFilter.CHAT_ONLY
-                )
+                listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
             ProductCategoryType.OTHER_SCREEN_RECORDINGS ->
-                listOfOtherGroup(
-                    title = "Other Screen Recordings",
-                    groupKind = MediaKind.SCREEN_RECORDING,
-                    kinds = listOf(MediaKind.SCREEN_RECORDING),
-                    excludedCategories = setOf(GroupCategory.SIMILAR),
-                    assetLimit = assetLimitPerGroup
-                )
+                listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
             ProductCategoryType.OTHER_VIDEOS ->
-                listOfOtherGroup(
-                    title = "Other Videos",
-                    groupKind = MediaKind.VIDEO,
-                    kinds = listOf(MediaKind.VIDEO),
-                    excludedCategories = setOf(GroupCategory.SIMILAR),
-                    assetLimit = assetLimitPerGroup
-                )
+                listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
             ProductCategoryType.OTHER ->
-                listOfOtherGroup(
-                    title = "Other Photos",
-                    groupKind = MediaKind.PHOTO,
-                    kinds = listOf(MediaKind.PHOTO),
-                    excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
-                    assetLimit = assetLimitPerGroup,
-                    chatFilter = ChatFilter.NON_CHAT
-                )
+                listOfOtherGroup(otherAssetQuerySpec(productCategoryType), assetLimitPerGroup)
         }
     }
 
@@ -1404,7 +1372,9 @@ internal class ScanDatabase(context: Context) {
         args += groupLimit.toString()
         return readableDatabase.rawQuery(
             """
-            SELECT g.id, g.category, g.type, COUNT(i.asset_id) AS c, SUM(a.size) AS total_size, MIN(a.created_at) AS oldest
+            SELECT g.id, g.category, g.type, COUNT(i.asset_id) AS c, SUM(a.size) AS total_size,
+                   MIN(a.created_at) AS oldest,
+                   MAX(CASE WHEN a.created_at >= a.date_added * 1000 THEN a.created_at ELSE a.date_added * 1000 END) AS latest_media_time
             FROM similar_group g
             JOIN similar_group_item i ON i.group_id = g.id
             JOIN media_asset a ON a.id = i.asset_id
@@ -1426,6 +1396,7 @@ internal class ScanDatabase(context: Context) {
                 val count = cursor.getInt(3)
                 val totalSize = cursor.getLong(4)
                 val oldest = DATE_FORMAT.format(Date(cursor.getLong(5)))
+                val latestMediaTime = cursor.getLong(6)
                 val assets = loadGroupAssets(groupId, assetLimitPerGroup)
                 groups += SimilarGroup(
                     id = groupId,
@@ -1435,7 +1406,8 @@ internal class ScanDatabase(context: Context) {
                     kind = kind,
                     assets = assets,
                     totalAssetCount = count,
-                    totalSizeBytes = totalSize
+                    totalSizeBytes = totalSize,
+                    latestAssetTimeMillis = latestMediaTime
                 )
             }
             groups
@@ -1490,22 +1462,19 @@ internal class ScanDatabase(context: Context) {
     }
 
     private fun listOfOtherGroup(
-        title: String,
-        groupKind: MediaKind,
-        kinds: List<MediaKind>,
-        excludedCategories: Set<GroupCategory>,
-        assetLimit: Int,
-        chatFilter: ChatFilter = ChatFilter.ANY
+        spec: OtherAssetQuerySpec?,
+        assetLimit: Int
     ): List<SimilarGroup> {
+        if (spec == null) return emptyList()
         val result = mutableListOf<SimilarGroup>()
         addOtherGroup(
             result = result,
-            title = title,
-            groupKind = groupKind,
-            kinds = kinds,
-            excludedCategories = excludedCategories,
+            title = spec.title,
+            groupKind = spec.groupKind,
+            kinds = spec.kinds,
+            excludedCategories = spec.excludedCategories,
             assetLimit = assetLimit,
-            chatFilter = chatFilter
+            chatFilter = spec.chatFilter
         )
         return result
     }
@@ -1538,8 +1507,47 @@ internal class ScanDatabase(context: Context) {
             kind = groupKind,
             assets = assets,
             totalAssetCount = stats.count,
-            totalSizeBytes = stats.totalSize
+            totalSizeBytes = stats.totalSize,
+            latestAssetTimeMillis = stats.latestAssetTimeMillis
         )
+    }
+
+    private fun otherAssetQuerySpec(productCategoryType: ProductCategoryType): OtherAssetQuerySpec? {
+        return when (productCategoryType) {
+            ProductCategoryType.OTHER_SCREENSHOTS -> OtherAssetQuerySpec(
+                title = "Other Screenshots",
+                groupKind = MediaKind.SCREENSHOT,
+                kinds = listOf(MediaKind.SCREENSHOT),
+                excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE)
+            )
+            ProductCategoryType.CHAT_PHOTOS -> OtherAssetQuerySpec(
+                title = "Chat Photos",
+                groupKind = MediaKind.PHOTO,
+                kinds = listOf(MediaKind.PHOTO),
+                excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
+                chatFilter = ChatFilter.CHAT_ONLY
+            )
+            ProductCategoryType.OTHER_SCREEN_RECORDINGS -> OtherAssetQuerySpec(
+                title = "Other Screen Recordings",
+                groupKind = MediaKind.SCREEN_RECORDING,
+                kinds = listOf(MediaKind.SCREEN_RECORDING),
+                excludedCategories = setOf(GroupCategory.SIMILAR)
+            )
+            ProductCategoryType.OTHER_VIDEOS -> OtherAssetQuerySpec(
+                title = "Other Videos",
+                groupKind = MediaKind.VIDEO,
+                kinds = listOf(MediaKind.VIDEO),
+                excludedCategories = setOf(GroupCategory.SIMILAR)
+            )
+            ProductCategoryType.OTHER -> OtherAssetQuerySpec(
+                title = "Other Photos",
+                groupKind = MediaKind.PHOTO,
+                kinds = listOf(MediaKind.PHOTO),
+                excludedCategories = setOf(GroupCategory.SIMILAR, GroupCategory.DUPLICATE),
+                chatFilter = ChatFilter.NON_CHAT
+            )
+            else -> null
+        }
     }
 
     fun groupCount(): Int {
@@ -1555,6 +1563,36 @@ internal class ScanDatabase(context: Context) {
         ).use {
             if (it.moveToFirst()) it.getInt(0) else 0
         }
+    }
+
+    /**
+     * 分页读取平铺产品分类资源。
+     *
+     * Similar/Duplicate 等分组类分类应使用 loadGroupAssetsPage() 按 groupId 读取。
+     * 这里仅服务 Other、Chat Photos、Other Videos 等非分组详情页。
+     */
+    fun loadProductCategoryAssets(
+        productCategoryType: ProductCategoryType,
+        offset: Int,
+        limit: Int
+    ): List<MediaAsset> {
+        val spec = otherAssetQuerySpec(productCategoryType) ?: return emptyList()
+        return loadAssets(
+            kinds = spec.kinds,
+            excludedCategories = spec.excludedCategories,
+            assetLimit = limit,
+            offset = offset,
+            chatFilter = spec.chatFilter
+        )
+    }
+
+    /** 分页读取某个 Similar/Duplicate 分组下的资源。 */
+    fun loadGroupAssetsPage(
+        groupId: Long,
+        offset: Int,
+        limit: Int
+    ): List<MediaAsset> {
+        return loadGroupAssets(groupId, limit, offset)
     }
 
     private fun findAssetId(mediaStoreId: Long, kind: MediaKind): Long? {
@@ -1670,7 +1708,8 @@ internal class ScanDatabase(context: Context) {
 
     private fun loadGroupAssets(
         groupId: Long,
-        assetLimit: Int
+        assetLimit: Int,
+        offset: Int = 0
     ): List<MediaAsset> {
         return loadPagedAssets(
             sqlWithoutLimit = """
@@ -1690,7 +1729,8 @@ internal class ScanDatabase(context: Context) {
             ORDER BY a.created_at DESC, a.date_added DESC, a.media_store_id DESC
             """.trimIndent(),
             args = listOf(groupId.toString()),
-            maxRows = assetLimit
+            maxRows = assetLimit,
+            initialOffset = offset
         )
     }
 
@@ -1698,6 +1738,7 @@ internal class ScanDatabase(context: Context) {
         kinds: List<MediaKind>,
         excludedCategories: Set<GroupCategory>,
         assetLimit: Int,
+        offset: Int = 0,
         chatFilter: ChatFilter = ChatFilter.ANY
     ): List<MediaAsset> {
         val (whereSql, args) = assetWhereClause(kinds, excludedCategories, chatFilter)
@@ -1713,7 +1754,8 @@ internal class ScanDatabase(context: Context) {
             ORDER BY a.created_at DESC, a.date_added DESC, a.media_store_id DESC
             """.trimIndent(),
             args = args,
-            maxRows = assetLimit
+            maxRows = assetLimit,
+            initialOffset = offset
         )
     }
 
@@ -1726,11 +1768,12 @@ internal class ScanDatabase(context: Context) {
     private fun loadPagedAssets(
         sqlWithoutLimit: String,
         args: List<String>,
-        maxRows: Int = Int.MAX_VALUE
+        maxRows: Int = Int.MAX_VALUE,
+        initialOffset: Int = 0
     ): List<MediaAsset> {
         if (maxRows <= 0) return emptyList()
         val assets = mutableListOf<MediaAsset>()
-        var offset = 0
+        var offset = initialOffset.coerceAtLeast(0)
         while (true) {
             val pageSize = minOf(ASSET_QUERY_PAGE_SIZE, maxRows - assets.size)
             val page = readableDatabase.rawQuery(
@@ -1759,7 +1802,8 @@ internal class ScanDatabase(context: Context) {
         val (whereSql, args) = assetWhereClause(kinds, excludedCategories, chatFilter)
         return readableDatabase.rawQuery(
             """
-            SELECT COUNT(*), COALESCE(SUM(a.size), 0)
+            SELECT COUNT(*), COALESCE(SUM(a.size), 0),
+                   COALESCE(MAX(CASE WHEN a.created_at >= a.date_added * 1000 THEN a.created_at ELSE a.date_added * 1000 END), 0)
             FROM media_asset a
             WHERE $whereSql
             """.trimIndent(),
@@ -1768,10 +1812,11 @@ internal class ScanDatabase(context: Context) {
             if (cursor.moveToFirst()) {
                 AssetStats(
                     count = cursor.getInt(0),
-                    totalSize = cursor.getLong(1)
+                    totalSize = cursor.getLong(1),
+                    latestAssetTimeMillis = cursor.getLong(2)
                 )
             } else {
-                AssetStats(0, 0L)
+                AssetStats(0, 0L, 0L)
             }
         }
     }
@@ -1944,7 +1989,16 @@ data class CandidateFingerprint(
 
 private data class AssetStats(
     val count: Int,
-    val totalSize: Long
+    val totalSize: Long,
+    val latestAssetTimeMillis: Long
+)
+
+private data class OtherAssetQuerySpec(
+    val title: String,
+    val groupKind: MediaKind,
+    val kinds: List<MediaKind>,
+    val excludedCategories: Set<GroupCategory>,
+    val chatFilter: ChatFilter = ChatFilter.ANY
 )
 
 /**

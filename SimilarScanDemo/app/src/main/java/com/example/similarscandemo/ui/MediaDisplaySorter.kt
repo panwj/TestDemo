@@ -22,9 +22,8 @@ object MediaDisplaySorter {
         return groups
             .map { group -> group.copy(assets = newestFirst(group.assets)) }
             .sortedWith(
-                compareByDescending<SimilarGroup> { group ->
-                    group.assets.maxOfOrNull(::mediaTimeKey) ?: 0L
-                }.thenByDescending { it.id }
+                compareByDescending<SimilarGroup> { it.latestAssetTimeMillis }
+                    .thenByDescending { it.id }
             )
     }
 

@@ -21,5 +21,14 @@ data class SimilarGroup(
      * 当前组的真实资源总大小。默认使用已加载资源求和；
      * Other 分类会由 SQL 聚合填入真实值。
      */
-    val totalSizeBytes: Long = assets.sumOf { it.size }
+    val totalSizeBytes: Long = assets.sumOf { it.size },
+    /**
+     * 当前组内最新资源的媒体时间，用于列表排序。
+     *
+     * 首页可能只加载少量预览资源，因此排序不能依赖 assets 中的样本时间；数据库查询会通过
+     * MAX(created_at/date_added) 聚合出完整分组的最新时间。
+     */
+    val latestAssetTimeMillis: Long = assets.maxOfOrNull {
+        maxOf(it.createdAt.time, it.dateAdded * 1000L)
+    } ?: 0L
 )

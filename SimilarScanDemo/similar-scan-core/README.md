@@ -122,13 +122,32 @@ val categories = client.loadProductCategories(previewAssetLimit = 2)
 和 `SimilarGroup.totalSizeBytes`。首页建议传入较小值，例如 2，避免 Other 等大分类
 一次性加载大量资源。
 
-进入分类详情时推荐只读取当前分类，并保留默认预览数量以获取完整资源：
+进入分类详情时推荐只读取当前分类。平铺大分类可以先读取分类摘要，再分页读取资源：
 
 ```kotlin
-val category = client.loadProductCategory(ProductCategoryType.SIMILAR)
+val category = client.loadProductCategory(
+    ProductCategoryType.OTHER,
+    previewAssetLimit = 0
+)
+
+val firstPage = client.loadProductCategoryAssets(
+    type = ProductCategoryType.OTHER,
+    offset = 0,
+    limit = 120
+)
 ```
 
-底层资源列表会分页读取 SQLite Cursor，避免大分类一次性塞满 CursorWindow。
+相似/相同分组下的资源可以按 groupId 分页读取：
+
+```kotlin
+val page = client.loadSimilarGroupAssets(
+    groupId = group.id,
+    offset = 0,
+    limit = 60
+)
+```
+
+分组排序使用数据库聚合出的 `latestAssetTimeMillis`，不会因为首页只返回少量预览资源而改变排序。
 
 读取原始分组：
 

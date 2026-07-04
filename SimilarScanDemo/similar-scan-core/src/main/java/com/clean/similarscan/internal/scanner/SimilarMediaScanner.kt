@@ -306,6 +306,28 @@ internal class SimilarMediaScanner(context: Context) {
     ) = database.loadGroups(productCategoryType, groupLimit, previewAssetLimit)
 
     /**
+     * 按产品分类分页读取资源。
+     *
+     * 该方法只读取展示数据，不参与扫描、指纹计算或相似分组生成。
+     */
+    fun loadProductCategoryAssets(
+        productCategoryType: ProductCategoryType,
+        offset: Int,
+        limit: Int
+    ) = database.loadProductCategoryAssets(productCategoryType, offset, limit)
+
+    /**
+     * 按相似组分页读取资源。
+     *
+     * 用于详情页或预览页按需加载大分组，避免一次性把全部媒体放入内存。
+     */
+    fun loadSimilarGroupAssets(
+        groupId: Long,
+        offset: Int,
+        limit: Int
+    ) = database.loadGroupAssetsPage(groupId, offset, limit)
+
+    /**
      * SimilarMediaScanner 持有 Room 数据库连接。前台服务每次扫描都会创建 scanner，
      * 扫描结束后必须显式关闭连接，避免系统在 GC 时报告数据库连接泄漏。
      */

@@ -314,14 +314,34 @@ OTHER
 这样每个分类仍能展示完整数量，但不会因为 Other、Other Screenshots 等大分类一次性
 读取几千张资源导致列表卡顿或 CursorWindow 压力。
 
-详情页推荐按当前入口只读取一个分类：
+详情页推荐按当前入口只读取一个分类。对于 Other、Chat Photos、Other Videos 等平铺大类，
+先读取分类摘要，再分页加载资源：
 
 ```kotlin
-val category = client.loadProductCategory(ProductCategoryType.SIMILAR)
+val category = client.loadProductCategory(
+    ProductCategoryType.OTHER,
+    previewAssetLimit = 0
+)
+
+val page = client.loadProductCategoryAssets(
+    type = ProductCategoryType.OTHER,
+    offset = 0,
+    limit = 120
+)
 ```
 
-`loadProductCategory()` 默认返回该分类下完整资源，适合详情页、删除页、大图预览页使用。
-SDK 内部会按固定页大小读取 SQLite Cursor，避免大分类一次性加载到单个 CursorWindow。
+对于 Similar、Duplicates 等分组类详情，可以按 groupId 分页加载某个分组下的资源：
+
+```kotlin
+val page = client.loadSimilarGroupAssets(
+    groupId = group.id,
+    offset = group.assets.size,
+    limit = 60
+)
+```
+
+`SimilarGroup.latestAssetTimeMillis` 来自数据库对完整分组的 `MAX(created_at/date_added)`
+聚合，首页排序不依赖 `previewAssetLimit` 返回的少量预览资源。
 
 ### 8.2 原始分组
 
@@ -542,9 +562,9 @@ OTHER
 ```
 
 `Other` 类可能资源很多。首页建议通过 `previewAssetLimit` 只读取少量预览资源，同时用
-`itemCount` 和 `totalSize` 展示真实数量与大小。用户点击分类后，再通过
-`loadProductCategory(categoryType)` 读取当前分类的完整列表，避免首页一次性加载全部分类
-下的全部资源。
+`itemCount` 和 `totalSize` 展示真实数量与大小。用户点击分类后，详情页先通过
+`loadProductCategory(categoryType, previewAssetLimit = 0)` 获取摘要，再用
+`loadProductCategoryAssets(categoryType, offset, limit)` 逐页追加资源。
 
 ## 14. 线程与性能注意事项
 

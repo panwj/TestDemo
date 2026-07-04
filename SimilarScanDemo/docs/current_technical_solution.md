@@ -504,12 +504,15 @@ client.loadProductCategories(previewAssetLimit = 2)
 ```
 
 该参数只限制每个分组返回的预览资源，不影响分类和分组的真实数量、真实大小。进入某个
-分类详情页后，再按当前分类单独读取完整资源：
+分类详情页后，先按当前分类单独读取摘要，再分页读取资源：
 
 ```kotlin
-client.loadProductCategory(categoryType)
+client.loadProductCategory(categoryType, previewAssetLimit = 0)
+client.loadProductCategoryAssets(categoryType, offset, limit)
 ```
 
+相似/相同分组详情通过 `loadSimilarGroupAssets(groupId, offset, limit)` 追加横向资源。
+分组排序使用 SQL 聚合出的 `latestAssetTimeMillis`，不会受首页预览资源数量影响。
 SDK 数据库读取资源列表时按固定页大小分页查询，避免 Other 等大分类一次性塞满
 CursorWindow。Demo 业务 UI 统一按媒体时间倒序展示：
 
