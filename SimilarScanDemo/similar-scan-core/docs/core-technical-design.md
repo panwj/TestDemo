@@ -267,12 +267,16 @@ DEFAULT_IMAGE_FINGERPRINT_SIZE = 256
 
 ```text
 API 29+ ContentResolver.loadThumbnail(asset.uri, Size(imageFingerprintSize, imageFingerprintSize), null)
--> legacy MediaStore.Images.Thumbnails.getThumbnail(..., MINI_KIND, null)
 -> resolver.openInputStream(asset.uri) + BitmapFactory inSampleSize decode
 -> 查询 MediaStore.MediaColumns.DATA
 -> BitmapFactory.decodeFile(path, options)
 -> normalizeFingerprintBitmap(bitmap, imageFingerprintSize)
 ```
+
+API 28 及以下会在自行解码前尝试旧版 `MediaStore.Images.Thumbnails.getThumbnail(..., MINI_KIND, null)`。
+API 29+ 如果 `loadThumbnail()` 失败，会直接进入 URI/DATA 降采样解码，不再调用旧版
+`MediaStore.Images.Thumbnails`。原因是新系统里旧接口通常仍会代理到 `loadThumbnail()`，
+重复调用只会放大失败日志和耗时。
 
 `normalizeFingerprintBitmap()` 只做等比缩放：
 

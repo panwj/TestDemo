@@ -35,11 +35,26 @@ class ProductCategoryAdapter(
         val view = convertView ?: LayoutInflater.from(activity)
             .inflate(R.layout.item_product_category, parent, false)
         val category = getItem(position)
-        val assets = MediaDisplaySorter.newestFirst(category.assets)
+        /*
+         * 首页预览要保留分组语义：
+         * - Similar/Duplicates/Similar Videos 这类 grouped 分类，预览应来自同一个首组；
+         *   如果直接把整个分类 assets 打平再按时间排序，Duplicates 可能显示两个不同组的图，
+         *   看起来就像第二张缩略图加载错了。
+         * - Other 这类平铺分类没有组语义，继续按媒体时间倒序取预览资源。
+         */
+        val previewAssets = if (category.type.grouped) {
+            MediaDisplaySorter.newestGroupFirst(category.groups)
+                .firstOrNull()
+                ?.assets
+                .orEmpty()
+                .take(previewAssetLimit)
+        } else {
+            MediaDisplaySorter.newestFirst(category.assets).take(previewAssetLimit)
+        }
         val unit = when {
-            assets.isEmpty() -> "Photos"
-            assets.first().kind == MediaKind.VIDEO ||
-                assets.first().kind == MediaKind.SCREEN_RECORDING -> "Videos"
+            previewAssets.isEmpty() -> "Photos"
+            previewAssets.first().kind == MediaKind.VIDEO ||
+                previewAssets.first().kind == MediaKind.SCREEN_RECORDING -> "Videos"
             else -> "Photos"
         }
 
@@ -48,10 +63,10 @@ class ProductCategoryAdapter(
             "${category.itemCount} $unit · ${FormatUtils.formatBytes(category.totalSize)}"
 
         val previewGrid = view.findViewById<GridView>(R.id.categoryPreviewGrid)
-        previewGrid.visibility = if (assets.isEmpty()) View.GONE else View.VISIBLE
+        previewGrid.visibility = if (previewAssets.isEmpty()) View.GONE else View.VISIBLE
         previewGrid.isEnabled = false
         previewGrid.isClickable = false
-        previewGrid.adapter = CategoryPreviewAdapter(activity, assets.take(previewAssetLimit))
+        previewGrid.adapter = CategoryPreviewAdapter(activity, previewAssets)
 
         view.setOnClickListener {
             activity.startActivity(

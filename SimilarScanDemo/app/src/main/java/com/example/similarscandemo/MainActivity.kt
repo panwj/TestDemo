@@ -28,6 +28,7 @@ import com.clean.similarscan.api.SimilarScanClient
 import com.clean.similarscan.api.SimilarScanSdk
 import com.example.similarscandemo.compress.VideoCompressActivity
 import com.example.similarscandemo.contacts.ContactsActivity
+import com.example.similarscandemo.ui.MediaDisplaySorter
 import com.example.similarscandemo.ui.ProductCategoryAdapter
 import com.example.similarscandemo.util.DeleteOperationStore
 import java.util.concurrent.Executors
@@ -334,9 +335,7 @@ class MainActivity : Activity() {
         val generation = renderGeneration.incrementAndGet()
         renderExecutor.execute {
             if (generation != renderGeneration.get()) return@execute
-            val categories = scanClient.loadProductCategories(
-                previewAssetLimit = HOME_PREVIEW_ASSET_LIMIT
-            )
+            val categories = loadHomeProductCategories()
             mainHandler.post {
                 if (generation != renderGeneration.get()) return@post
                 render(categories)
@@ -344,6 +343,47 @@ class MainActivity : Activity() {
                     summaryText.text = "Cached results are ready while a new scan can update them"
                 }
             }
+        }
+    }
+
+    /**
+     * 首页专用分类读取。
+     *
+     * 过去直接调用 loadProductCategories(previewAssetLimit = 2) 时，SDK 会为每个分组都读取
+     * 2 张预览图。假如 Duplicates 有 100 个分组，首页虽然只展示首组 2 张，但 DB 实际会读
+     * 约 200 张图片。这里先只读取分类/分组统计，再仅为首页真正展示的首组或平铺分类补预览图。
+     */
+    private fun loadHomeProductCategories(): List<ProductCategory> {
+        val categories = scanClient.loadProductCategories(previewAssetLimit = 0)
+        return categories.map { category ->
+            if (category.itemCount <= 0) return@map category
+
+            val groups = if (category.type.grouped) {
+                val sortedGroups = MediaDisplaySorter.newestGroupFirst(category.groups)
+                val firstGroup = sortedGroups.firstOrNull() ?: return@map category.copy(groups = sortedGroups)
+                val previewAssets = scanClient.loadSimilarGroupAssets(
+                    groupId = firstGroup.id,
+                    offset = 0,
+                    limit = HOME_PREVIEW_ASSET_LIMIT
+                )
+                sortedGroups.mapIndexed { index, group ->
+                    if (index == 0) {
+                        group.copy(assets = MediaDisplaySorter.newestFirst(previewAssets))
+                    } else {
+                        group.copy(assets = emptyList())
+                    }
+                }
+            } else {
+                val previewAssets = scanClient.loadProductCategoryAssets(
+                    type = category.type,
+                    offset = 0,
+                    limit = HOME_PREVIEW_ASSET_LIMIT
+                )
+                category.groups.firstOrNull()?.let { group ->
+                    listOf(group.copy(assets = MediaDisplaySorter.newestFirst(previewAssets)))
+                }.orEmpty()
+            }
+            category.copy(groups = groups)
         }
     }
 

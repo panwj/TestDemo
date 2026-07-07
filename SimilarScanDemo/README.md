@@ -188,11 +188,11 @@ BK-Tree 不使用拍摄时间或宽高比做硬过滤，因此不会在最终阈
 视频扫描当前关键方式：
 
 ```text
-MediaStore DATA 真实路径
--> MediaMetadataRetriever 多时间点抽帧
--> 每帧输出 9x8 Bitmap
--> 每帧计算 dHash + colorHash
--> 至少 2 个有效帧命中后判定视频相似
+BALANCED 模式
+-> 优先读取系统视频缩略图并计算 dHash + colorHash
+-> 再通过 MediaMetadataRetriever 补充少量时间点帧
+-> 视频候选按时长桶、宽高比桶和算法版本收窄
+-> 多帧 dHash + colorHash 精判
 ```
 
 竞品扫描范围只包含图片和视频，因此对齐版本不请求音频权限，也不枚举音频资源。

@@ -27,8 +27,10 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
      * 该方法只服务图片和截图。视频使用独立的 MediaMetadataRetriever 多帧流程。
      * 当前产品策略是“系统缩略图优先”：
      * 1. Android 10+ 先走 ContentResolver.loadThumbnail，请求目标尺寸由系统直接生成；
-     * 2. 失败或低版本再读 MediaStore.Images.Thumbnails，复用系统相册预生成缓存；
-     * 3. 最后才自行通过 uri 或 DATA 路径 decode。
+     * 2. Android 10+ loadThumbnail 失败后直接进入 uri/DATA 降采样解码，避免旧缩略图
+     *    API 在新系统内部再次代理到 loadThumbnail，造成重复失败和重复耗时；
+     * 3. Android 9 及以下再读 MediaStore.Images.Thumbnails，复用系统相册预生成缓存；
+     * 4. 最后才自行通过 uri 或 DATA 路径 decode。
      */
     fun loadFingerprintBitmap(asset: MediaAsset, thumbSize: Int = 1024): Bitmap? {
         return loadFingerprintBitmapWithSource(asset, thumbSize)?.bitmap
@@ -45,8 +47,9 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
             try {
                 /*
                  * loadThumbnail 能让 MediaProvider 按请求尺寸返回缩略图，避免先取旧
-                 * MINI_KIND 大图再二次缩放。真机上重点观察 load_fingerprint_bitmap
-                 * 是否下降；失败时仍保留旧接口兜底，保证 API 23+ 和厂商 ROM 可用。
+                 * MINI_KIND 大图再二次缩放。Android 10+ 的旧 Thumbnails API 很多设备
+                 * 内部仍会转调 loadThumbnail；如果这里失败，继续调用旧 API 往往只是
+                 * 重复失败。因此新系统直接进入 URI/DATA 降采样兜底。
                  */
                 return FingerprintBitmap(
                     normalizeFingerprintBitmap(
@@ -60,14 +63,15 @@ class MediaBitmapLoader(private val resolver: ContentResolver) {
                     FingerprintBitmapSource.SYSTEM_LOAD_THUMBNAIL
                 )
             } catch (_: Exception) {
-                // 部分 MediaProvider/云端资源无法按 URI 加载缩略图，继续走旧缓存路径。
+                // 部分 MediaProvider/云端资源无法按 URI 加载缩略图，继续走解码兜底。
             }
-        }
-        legacyImageThumbnail(asset)?.let {
-            return FingerprintBitmap(
-                normalizeFingerprintBitmap(it, thumbSize),
-                FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL
-            )
+        } else {
+            legacyImageThumbnail(asset)?.let {
+                return FingerprintBitmap(
+                    normalizeFingerprintBitmap(it, thumbSize),
+                    FingerprintBitmapSource.SYSTEM_MEDIASTORE_THUMBNAIL
+                )
+            }
         }
         decodeSampledBitmap(asset.uri, thumbSize)?.let {
             return FingerprintBitmap(normalizeFingerprintBitmap(it, thumbSize), FingerprintBitmapSource.DECODE_URI)
