@@ -1,6 +1,7 @@
 package com.clean.similarscan.internal.scanner
 
 import android.content.Context
+import com.tencent.mmkv.MMKV
 
 /**
  * 保存 MediaStore 增量扫描游标。
@@ -9,7 +10,7 @@ import android.content.Context
  * 全量扫描，用于同步删除和修复极端情况下遗漏的变更。
  */
 class ScanStateStore(context: Context) {
-    private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val kv: MMKV = MMKVProvider.mmkv(context, PREFS_NAME)
 
     /**
      * 读取上一次成功保存的扫描游标。
@@ -18,10 +19,10 @@ class ScanStateStore(context: Context) {
      */
     fun checkpoint(): ScanCheckpoint {
         return ScanCheckpoint(
-            imageGeneration = preferences.getLong(KEY_IMAGE_GENERATION, 0L),
-            videoGeneration = preferences.getLong(KEY_VIDEO_GENERATION, 0L),
-            lastFullScanAt = preferences.getLong(KEY_LAST_FULL_SCAN_AT, 0L),
-            mediaStoreVersion = preferences.getString(KEY_MEDIA_STORE_VERSION, "").orEmpty()
+            imageGeneration = kv.decodeLong(KEY_IMAGE_GENERATION, 0L),
+            videoGeneration = kv.decodeLong(KEY_VIDEO_GENERATION, 0L),
+            lastFullScanAt = kv.decodeLong(KEY_LAST_FULL_SCAN_AT, 0L),
+            mediaStoreVersion = kv.decodeString(KEY_MEDIA_STORE_VERSION, "").orEmpty()
         )
     }
 
@@ -53,16 +54,12 @@ class ScanStateStore(context: Context) {
         mediaStoreVersion: String,
         completedFullScan: Boolean
     ) {
-        preferences.edit()
-            .putLong(KEY_IMAGE_GENERATION, imageGeneration)
-            .putLong(KEY_VIDEO_GENERATION, videoGeneration)
-            .putString(KEY_MEDIA_STORE_VERSION, mediaStoreVersion)
-            .apply {
-                if (completedFullScan) {
-                    putLong(KEY_LAST_FULL_SCAN_AT, System.currentTimeMillis())
-                }
-            }
-            .apply()
+        kv.encode(KEY_IMAGE_GENERATION, imageGeneration)
+        kv.encode(KEY_VIDEO_GENERATION, videoGeneration)
+        kv.encode(KEY_MEDIA_STORE_VERSION, mediaStoreVersion)
+        if (completedFullScan) {
+            kv.encode(KEY_LAST_FULL_SCAN_AT, System.currentTimeMillis())
+        }
     }
 
     companion object {
@@ -72,6 +69,29 @@ class ScanStateStore(context: Context) {
         private const val KEY_LAST_FULL_SCAN_AT = "last_full_scan_at"
         private const val KEY_MEDIA_STORE_VERSION = "media_store_version"
         private const val FULL_SCAN_INTERVAL_MS = 24L * 60L * 60L * 1000L
+    }
+}
+
+/**
+ * SDK 内部 MMKV 初始化入口。
+ *
+ * MMKV 需要在使用前初始化。SDK 作为库不能要求宿主一定在 Application 中提前初始化，
+ * 因此在轻量存储首次访问时使用 applicationContext 做幂等初始化。
+ */
+private object MMKVProvider {
+    @Volatile
+    private var initialized = false
+
+    fun mmkv(context: Context, id: String): MMKV {
+        if (!initialized) {
+            synchronized(this) {
+                if (!initialized) {
+                    MMKV.initialize(context.applicationContext)
+                    initialized = true
+                }
+            }
+        }
+        return MMKV.mmkvWithID(id)
     }
 }
 

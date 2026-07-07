@@ -18,25 +18,20 @@ object DeleteOperationStore {
     private val currentSessionId: String = UUID.randomUUID().toString()
 
     fun begin(context: Context) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_OWNER_SESSION, currentSessionId)
-            .putLong(KEY_STARTED_AT, System.currentTimeMillis())
-            .apply()
+        val kv = MmkvStore.store(context, PREFS)
+        kv.encode(KEY_OWNER_SESSION, currentSessionId)
+        kv.encode(KEY_STARTED_AT, System.currentTimeMillis())
     }
 
     fun finish(context: Context) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .apply()
+        MmkvStore.store(context, PREFS).clearAll()
     }
 
     fun shouldRecover(context: Context, now: Long = System.currentTimeMillis()): Boolean {
-        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val owner = preferences.getString(KEY_OWNER_SESSION, "").orEmpty()
+        val kv = MmkvStore.store(context, PREFS)
+        val owner = kv.decodeString(KEY_OWNER_SESSION, "").orEmpty()
         if (owner.isBlank()) return true
         if (owner != currentSessionId) return true
-        return now - preferences.getLong(KEY_STARTED_AT, now) >= STALE_IN_SAME_PROCESS_MS
+        return now - kv.decodeLong(KEY_STARTED_AT, now) >= STALE_IN_SAME_PROCESS_MS
     }
 }

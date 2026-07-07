@@ -1,6 +1,7 @@
 package com.example.similarscandemo.compress
 
 import android.content.Context
+import com.example.similarscandemo.util.MmkvStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -11,26 +12,24 @@ import java.util.Locale
  * 竞品规则为每日免费 2 次；这属于产品业务，不放入压缩 SDK。
  */
 class VideoCompressionQuotaStore(context: Context) {
-    private val prefs = context.getSharedPreferences("video_compress_quota", Context.MODE_PRIVATE)
+    private val kv = MmkvStore.store(context, PREFS_NAME)
 
     fun remainingFreeCount(): Int {
         resetIfNewDay()
-        return (FREE_LIMIT - prefs.getInt(KEY_USED, 0)).coerceAtLeast(0)
+        return (FREE_LIMIT - kv.decodeInt(KEY_USED, 0)).coerceAtLeast(0)
     }
 
     fun consumeOneFreeQuota() {
         resetIfNewDay()
-        val used = prefs.getInt(KEY_USED, 0)
-        prefs.edit().putInt(KEY_USED, used + 1).apply()
+        val used = kv.decodeInt(KEY_USED, 0)
+        kv.encode(KEY_USED, used + 1)
     }
 
     private fun resetIfNewDay() {
         val today = todayKey()
-        if (prefs.getString(KEY_DAY, null) != today) {
-            prefs.edit()
-                .putString(KEY_DAY, today)
-                .putInt(KEY_USED, 0)
-                .apply()
+        if (kv.decodeString(KEY_DAY, null) != today) {
+            kv.encode(KEY_DAY, today)
+            kv.encode(KEY_USED, 0)
         }
     }
 
@@ -40,6 +39,7 @@ class VideoCompressionQuotaStore(context: Context) {
 
     companion object {
         const val FREE_LIMIT = 10
+        private const val PREFS_NAME = "video_compress_quota"
         private const val KEY_DAY = "day"
         private const val KEY_USED = "used"
     }

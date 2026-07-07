@@ -24,5 +24,6 @@ kotlin {
 
 dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
+    implementation("com.tencent:mmkv:1.3.9")
     kapt("androidx.room:room-compiler:2.6.1")
 }

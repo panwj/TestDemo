@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.Manifest
 import com.clean.similarscan.permission.SimilarScanPermissionChecker
+import com.example.similarscandemo.util.MmkvStore
 import com.clean.similarscan.permission.MediaAccessLevel as SdkMediaAccessLevel
 
 /**
@@ -62,15 +63,11 @@ object MediaPermissionHelper {
     }
 
     private fun markRequested(context: Context) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_REQUESTED_MEDIA_PERMISSION, true)
-            .apply()
+        MmkvStore.store(context, PREFS_NAME).encode(KEY_REQUESTED_MEDIA_PERMISSION, true)
     }
 
     private fun hasRequested(context: Context): Boolean {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(KEY_REQUESTED_MEDIA_PERMISSION, false)
+        return MmkvStore.store(context, PREFS_NAME).decodeBool(KEY_REQUESTED_MEDIA_PERMISSION, false)
     }
 
     private fun blockingPermissions(): Array<String> {
