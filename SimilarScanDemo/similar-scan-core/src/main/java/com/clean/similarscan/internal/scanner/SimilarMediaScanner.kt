@@ -131,7 +131,8 @@ internal class SimilarMediaScanner(context: Context) {
         progressiveSnapshotDirty = false
         ProgressiveScanSnapshotStore.start()
         try {
-        videoFingerprintCalculator.resetAdaptiveState()
+            // 进入 try 后所有退出路径都会清理 progressive snapshot，避免失败扫描留下进程内快照。
+            videoFingerprintCalculator.resetAdaptiveState()
 
         // 每次扫描从当前数据库指纹构建轻量 BK-Tree，确保图片候选按汉明距离完整召回。
         visualIndexes = mutableMapOf(
@@ -461,6 +462,7 @@ internal class SimilarMediaScanner(context: Context) {
      * 扫描结束后必须显式关闭连接，避免系统在 GC 时报告数据库连接泄漏。
      */
     fun close() {
+        // close 作为二次兜底：调用方提前关闭 client 时也释放扫描中快照。
         ProgressiveScanSnapshotStore.finish()
         imageComputeExecutor.shutdownNow()
         videoComputeExecutor.shutdownNow()

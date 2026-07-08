@@ -46,6 +46,10 @@ class MediaScanService : Service() {
                         request = SimilarScanRequest(
                             forceFull = forceFull,
                             videoFingerprintMode = VideoFingerprintMode.ADAPTIVE_BALANCED,
+                            /*
+                             * 扫描中 UI 首屏/过程刷新由 SDK 的 progressive snapshot 承担。
+                             * DB 中间发布只作为低频兜底，避免频繁 rebuildSimilarGroups 拉高总耗时。
+                             */
                             enableIntermediateGroupPublish = true,
                             firstIntermediateGroupPublishIntervalMs = 60_000L,
                             firstIntermediateGroupPublishMinAssets = 5_000,

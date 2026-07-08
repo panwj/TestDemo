@@ -6,6 +6,7 @@
 
 - [核心技术方案](docs/core-technical-design.md)：扫描链路、照片缩略图指纹、dHash/colorHash、BK-Tree、内存缓存、Duplicate、Similar 分组、视频单帧/多帧逻辑、删除一致性。
 - [SDK 集成指南](docs/integration-guide.md)：Gradle 依赖、权限申请、后台扫描、结果读取、缩略图加载、删除接入、宿主职责和排查清单。
+- [参考实现计划](docs/reference-implementation-plan.md)：其他媒体扫描项目复用当前 demo 扫描方案、首页更新和详情页数据策略时的落地步骤、注意事项和边界 case。
 
 ## SDK 能力
 
@@ -17,6 +18,8 @@ SDK 当前支持：
 - 识别相似图片、相似截图、相似视频和相似录屏；录屏在产品分类中归并到视频类展示。
 - 输出 Similar、Duplicates、Similar Screenshots、Similar Videos、Other Screenshots、Other Videos、Other 等产品分类。
 - SQLite 落库，支持缓存展示、断点续扫、增量扫描和资源未变化时复用旧指纹。
+- 扫描中提供 progressive snapshot，可在不频繁重建 DB 分组的情况下阶段性展示结果。
+- DB 中间发布默认保守兜底，最终结果仍以扫描完成后的 final rebuild 为准。
 - 使用删除中状态和 revision token，避免异步扫描把待删除资源重新写回结果。
 - 提供 UI 预览图加载接口，接入方无需访问内部 Bitmap 加载器。
 
@@ -34,6 +37,8 @@ SDK 当前支持：
 | 未命中视频/录屏 | 支持 | 视频和录屏都归并输出到 `OTHER_VIDEOS`。 |
 | 未命中普通照片 | 支持 | 普通照片输出到 `OTHER`，聊天来源图片不再单独拆分类。 |
 | 详情分页 | 支持 | 平铺分类按分类分页，相似/相同分组按 `groupId` 分页。 |
+| 扫描中快照 | 支持 | `loadProgressiveProductCategories()` 和 `loadProgressiveProductCategory()` 返回本轮扫描中阶段性结果。 |
+| 中间 DB 发布 | 支持 | 默认低频执行，只作为 snapshot 之外的稳定兜底。 |
 | 删除一致性 | 支持 | SDK 提供删除中标记、确认删除、取消恢复接口。 |
 
 SDK 当前不负责：
@@ -133,6 +138,14 @@ val result = client.scan(
 val categories = client.loadProductCategories(previewAssetLimit = 2)
 ```
 
+扫描进行中，如果宿主收到 `progress.resultUpdated == true`，可以优先读取本轮扫描中的轻量结果：
+
+```kotlin
+val progressive = client.loadProgressiveProductCategories(previewAssetLimit = 2)
+```
+
+建议首页采用“progressive snapshot + DB cached fallback”的方式：snapshot 已覆盖的分类使用本轮结果，尚未覆盖的分类继续展示上次 DB 缓存。扫描完成后再统一切回 `loadProductCategories()` 的最终结果。
+
 `previewAssetLimit` 只限制每个分组随结果返回的预览资源数量，不影响
 `ProductCategory.itemCount`、`ProductCategory.totalSize`、`SimilarGroup.totalAssetCount`
 和 `SimilarGroup.totalSizeBytes`。首页建议传入较小值，例如 2，避免 Other 等大分类
@@ -218,6 +231,8 @@ client.recoverStaleDeletePending()
 - 图片/截图扫描指纹默认使用最大边 256 的 Bitmap，可通过 `SimilarScanRequest.imageFingerprintSize` 配置，优先系统缩略图，失败后 URI/DATA 降采样解码。
 - 图片指纹为 `CombinedHash = 64-bit dHash + RGB 8x3 colorHash`。
 - 照片和截图分别维护 BK-Tree，BK-Tree 只做 dHash 候选召回。
+- 扫描中 UI 首屏/过程刷新使用 `ProgressiveScanSnapshotStore`；该快照只保存已确认候选边相关资产，不参与相似算法和最终分组。
+- `SimilarScanRequest` 中的 DB 中间发布参数默认保守：首次 60 秒/5000 资源/1 条边，后续 90 秒/10000 资源/20000 条边，最多 2 次。
 - `assetId -> CombinedHash` 内存缓存用于候选精判，避免大量回库读取 colorHash。
 - Duplicate 使用图片/截图的 duplicateReference 规则，SHA-256 是可延后缓存的字节级证据，不是进入 Duplicate 的硬条件；默认不阻塞扫描主链路。
 - Similar 最终按锚点直连规则重建，不使用相似关系传递闭包。

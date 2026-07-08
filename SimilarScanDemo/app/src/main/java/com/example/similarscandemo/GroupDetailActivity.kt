@@ -188,6 +188,7 @@ class GroupDetailActivity : Activity() {
 
     private fun loadLatestCategory(previewAssetLimit: Int): ProductCategory? {
         if (MediaScanService.isRunning) {
+            // 扫描中详情页读取 snapshot，确保从首页进入后能看到同一批阶段性分组。
             scanClient.loadProgressiveProductCategory(categoryType, previewAssetLimit)
                 ?.takeIf { it.itemCount > 0 }
                 ?.let { return it }

@@ -87,6 +87,7 @@ class MainActivity : Activity() {
                         prefix = "Scanning $processed media · $groups groups",
                         elapsedTimeText = elapsedTimeText
                     )
+                    // resultUpdated 表示 SDK 已发布新的 snapshot 或 DB 阶段结果；普通进度只更新数量。
                     if (resultUpdated) {
                         scheduleThrottledRender()
                     }
@@ -372,6 +373,7 @@ class MainActivity : Activity() {
             previewAssetLimit = HOME_PREVIEW_ASSET_LIMIT
         )
         if (progressiveCategories.none { it.itemCount > 0 }) return cachedCategories
+        // 扫描中优先展示本轮 snapshot；snapshot 尚未覆盖的分类继续使用上次 DB 缓存兜底。
         return cachedCategories.map { cached ->
             progressiveCategories
                 .firstOrNull { it.type == cached.type && it.itemCount > 0 }

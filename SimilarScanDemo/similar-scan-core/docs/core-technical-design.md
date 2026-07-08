@@ -137,7 +137,7 @@ maxIntermediateGroupPublishCount = 2
 
 实际发布策略会先用 MediaStore `Cursor.count` 估算本轮媒体总数，再做自适应分档。请求参数表示业务允许的最低发布门槛，内部自适应门槛只会把 DB publish 做得更保守，不会抢在业务配置之前提前触发。中间 publish 不是每发现一组就刷新，而是在扫描线程提交候选边后，按“时间 + 新增资源数/候选边数 + 最多次数”节流触发 `rebuildSimilarGroups()`，把当前 `similar_candidate_edge` 阶段性物化到 `similar_group`。
 
-demo 配置下首次 DB publish 规则：
+SDK/demo 默认配置下首次 DB publish 规则：
 
 | 估算媒体总数 | 最小等待时间 | 新增扫描资源门槛 | 新增候选边门槛 |
 | --- | ---: | ---: | ---: |
@@ -149,7 +149,7 @@ demo 配置下首次 DB publish 规则：
 
 首次发布必须已经出现至少 1 条 Similar/Duplicate 候选边；如果当前扫描的前几百个资源互不相似，即使进度数量已经变化，也不会发布空分组。
 
-demo 配置下后续 DB publish 规则：
+SDK/demo 默认配置下后续 DB publish 规则：
 
 | 估算媒体总数 | 最小间隔 | 距离上次新增资源门槛 | 距离上次新增候选边门槛 |
 | --- | ---: | ---: | ---: |

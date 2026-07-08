@@ -17,6 +17,7 @@ similar-scan-core/
   README.md                            SDK 能力和接入入口
   docs/core-technical-design.md        SDK 核心技术设计
   docs/integration-guide.md            SDK 接入指南
+  docs/reference-implementation-plan.md  其他媒体扫描项目参考实现计划
 ```
 
 ## 2. 当前应优先阅读
@@ -27,6 +28,7 @@ similar-scan-core/
 | `similar-scan-core/README.md` | 当前 | SDK module 能力边界、对外 API 和接入入口 |
 | `similar-scan-core/docs/core-technical-design.md` | 当前 | SDK 内部扫描、指纹、分组、删除一致性和性能策略 |
 | `similar-scan-core/docs/integration-guide.md` | 当前 | SDK 接入、权限申请、后台扫描、删除流程和宿主职责 |
+| `similar-scan-core/docs/reference-implementation-plan.md` | 当前 | 其他媒体扫描项目复用当前扫描、首页更新和详情页数据方案的落地计划 |
 | `docs/current_technical_solution.md` | 当前 | Demo 基于 SDK 的当前扫描、展示和竞品兼容方案 |
 | `docs/media_scan_business_constraints.md` | 当前 | 权限、部分授权、扫描中断、系统干扰和删除确认等业务 Case |
 | `docs/issue_prevention_checklist.md` | 当前 | 数据库崩溃、异步生命周期、分页展示、权限链路和外部干扰等问题记录与规避清单 |

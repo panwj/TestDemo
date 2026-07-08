@@ -13,7 +13,8 @@ MediaStore 扫描
 + 竞品 duplicateReference + 按需 SHA-256 校验
 + MediaStore generation 增量扫描
 + 前台服务后台执行
-+ 扫描中实时展示结果
++ progressive snapshot 扫描中阶段性展示结果
++ DB 中间发布低频兜底
 ```
 
 ## 技术配置
@@ -42,6 +43,8 @@ MediaStore 扫描
 - 清晰度、曝光、分辨率、收藏和编辑状态综合质量评分
 - Best、日期和容量排序
 - 前台服务扫描、进度通知和前台 MediaStore 变化监听
+- 首页扫描中优先展示 progressive snapshot，未覆盖分类回退上次 DB 缓存
+- 详情页扫描中优先读取当前分类 snapshot，停留页面内按 resultUpdated 阶段刷新
 - 默认清理选择、全选和取消全选
 - Android 系统媒体删除确认
 
@@ -157,8 +160,11 @@ MediaStore Cursor
 -> 图片通过 BK-Tree 按汉明距离召回候选
 -> 视频按当前多帧规则抽帧，并要求至少 2 个有效帧命中
 -> 精确阈值过滤
--> 更新 similar_group / similar_group_item
--> UI 收到进度回调并刷新缓存结果
+-> 写入 candidate edge
+-> progressive snapshot 发布扫描中临时结果
+-> DB 中间发布低频物化兜底
+-> 完成后 final rebuild 更新 similar_group / similar_group_item
+-> UI 根据 resultUpdated 阶段刷新首页和详情
 ```
 
 当前图片候选已升级为：
@@ -182,6 +188,8 @@ BK-Tree 不使用拍摄时间或宽高比做硬过滤，因此不会在最终阈
 - 指纹落库，支持断点续扫。
 - 候选桶减少比较量，避免全量 O(n²)。
 - UI 边扫边展示结果，不等最后一刻。
+- 扫描中 UI 主路径使用内存 snapshot，不频繁触发 DB rebuild。
+- DB 中间发布保留为兜底，避免页面重建或 snapshot 不可用时完全没有阶段性结果。
 - 下次打开先展示旧结果，再继续增量更新。
 - 常规重扫只查询 generation 发生变化的资源，每 24 小时执行一次完整同步。
 
@@ -211,6 +219,7 @@ SDK 能力和接入入口：
 similar-scan-core/README.md
 similar-scan-core/docs/core-technical-design.md
 similar-scan-core/docs/integration-guide.md
+similar-scan-core/docs/reference-implementation-plan.md
 ```
 
 业务边界和权限、删除、中断场景 Case：

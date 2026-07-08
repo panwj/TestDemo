@@ -239,6 +239,7 @@ internal object ProgressiveScanSnapshotStore {
         .thenByDescending { it.dateAdded }
         .thenByDescending { it.id }
 
+    // 只限制扫描中临时 UI 快照容量；最终 candidate edge 入库和 final rebuild 不受影响。
     private const val MAX_SNAPSHOT_ASSETS = 150_000
     private const val MAX_SNAPSHOT_EDGES = 450_000
 }
