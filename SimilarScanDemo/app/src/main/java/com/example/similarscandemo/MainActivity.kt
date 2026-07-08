@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var compressTabButton: Button
     private lateinit var contactsTabButton: Button
     private lateinit var progressBar: ProgressBar
+    private lateinit var progressPercentText: TextView
     private lateinit var statusText: TextView
     private lateinit var summaryText: TextView
     private lateinit var categoryList: ListView
@@ -64,6 +65,7 @@ class MainActivity : Activity() {
     private var notificationPermissionHandled = false
     private var mediaSettingsRequestInFlight = false
     private var scanStartRequestedAt = 0L
+    private var lastEstimatedMediaCount = 0
     private val mediaChangedScan = Runnable {
         if (!isScanning && MediaPermissionHelper.hasPermission(this)) startScan()
     }
@@ -78,7 +80,9 @@ class MainActivity : Activity() {
             when (event.action) {
                 MediaScanService.ACTION_PROGRESS -> {
                     isScanning = true
-                    statusText.text = message
+                    rememberEstimatedMediaCount(message)
+                    statusText.text = scanStatusText(processed)
+                    updateScanProgressIndicator(processed, message)
                     summaryText.text = buildScanSummary(
                         prefix = "Scanning $processed media · $groups groups",
                         elapsedTimeText = elapsedTimeText
@@ -122,6 +126,7 @@ class MainActivity : Activity() {
         compressTabButton = findViewById(R.id.compressTabButton)
         contactsTabButton = findViewById(R.id.contactsTabButton)
         progressBar = findViewById(R.id.progressBar)
+        progressPercentText = findViewById(R.id.progressPercentText)
         statusText = findViewById(R.id.statusText)
         summaryText = findViewById(R.id.summaryText)
         categoryList = findViewById(R.id.categoryList)
@@ -237,10 +242,11 @@ class MainActivity : Activity() {
     private fun startScan() {
         if (isScanning) return
         isScanning = true
+        lastEstimatedMediaCount = 0
         scanStartRequestedAt = System.currentTimeMillis()
         scanButton.isEnabled = false
         scanButton.text = "Scanning..."
-        progressBar.visibility = View.VISIBLE
+        showIndeterminateScanProgress()
         statusText.text = permissionStatusMessage()
         val intent = Intent(this, MediaScanService::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
@@ -270,7 +276,9 @@ class MainActivity : Activity() {
             else -> "Rescan"
         }
         progressBar.visibility = if (isScanning || preparing) View.VISIBLE else View.GONE
+        progressPercentText.visibility = if (isScanning || preparing) View.VISIBLE else View.GONE
         if (preparing && !isScanning) {
+            showIndeterminateScanProgress()
             summaryText.text = "Preparing media scan"
             statusText.text = "Finishing permission setup..."
         }
@@ -357,6 +365,21 @@ class MainActivity : Activity() {
      * 约 200 张图片。这里先只读取分类/分组统计，再仅为首页真正展示的首组或平铺分类补预览图。
      */
     private fun loadHomeProductCategories(): List<ProductCategory> {
+        val cachedCategories = loadCachedHomeProductCategories()
+        if (!isScanning) return cachedCategories
+
+        val progressiveCategories = scanClient.loadProgressiveProductCategories(
+            previewAssetLimit = HOME_PREVIEW_ASSET_LIMIT
+        )
+        if (progressiveCategories.none { it.itemCount > 0 }) return cachedCategories
+        return cachedCategories.map { cached ->
+            progressiveCategories
+                .firstOrNull { it.type == cached.type && it.itemCount > 0 }
+                ?: cached
+        }
+    }
+
+    private fun loadCachedHomeProductCategories(): List<ProductCategory> {
         val categories = scanClient.loadProductCategories(previewAssetLimit = 0)
         return categories.map { category ->
             if (category.itemCount <= 0) return@map category
@@ -406,7 +429,8 @@ class MainActivity : Activity() {
 
     private fun finishScanUi(summary: String, message: String) {
         isScanning = false
-        progressBar.visibility = View.GONE
+        lastEstimatedMediaCount = 0
+        hideScanProgress()
         scanButton.isEnabled = true
         scanButton.text = "Rescan"
         summaryText.text = summary
@@ -419,6 +443,53 @@ class MainActivity : Activity() {
             prefix
         } else {
             "$prefix · Time $elapsedTimeText"
+        }
+    }
+
+    private fun updateScanProgressIndicator(processed: Int, message: String) {
+        rememberEstimatedMediaCount(message)
+        val total = lastEstimatedMediaCount
+        if (total > 0) {
+            val percent = ((processed * 100f) / total).toInt().coerceIn(1, 99)
+            progressBar.isIndeterminate = false
+            progressBar.progress = percent
+            progressPercentText.text = "$percent%"
+        } else {
+            progressBar.isIndeterminate = true
+            progressPercentText.text = ""
+        }
+    }
+
+    private fun showIndeterminateScanProgress() {
+        progressBar.visibility = View.VISIBLE
+        progressPercentText.visibility = View.VISIBLE
+        progressBar.isIndeterminate = true
+        progressBar.progress = 0
+        progressPercentText.text = ""
+    }
+
+    private fun hideScanProgress() {
+        progressBar.visibility = View.GONE
+        progressPercentText.visibility = View.GONE
+        progressBar.isIndeterminate = true
+        progressBar.progress = 0
+        progressPercentText.text = ""
+    }
+
+    private fun rememberEstimatedMediaCount(message: String) {
+        val total = SCAN_TOTAL_REGEX.find(message)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: return
+        if (total > 0) lastEstimatedMediaCount = total
+    }
+
+    private fun scanStatusText(processed: Int): String {
+        return if (lastEstimatedMediaCount > 0) {
+            "Scanning $processed of $lastEstimatedMediaCount media."
+        } else {
+            "Scanning $processed media."
         }
     }
 
@@ -475,6 +546,7 @@ class MainActivity : Activity() {
         private const val HOME_PREVIEW_ASSET_LIMIT = 2
         private const val RESULT_RENDER_THROTTLE_MS = 800L
         private const val SERVICE_START_GRACE_MS = 2_000L
+        private val SCAN_TOTAL_REGEX = Regex("""Scanning\s+\d+\s+of\s+(\d+)\s+media""")
         private const val STATE_PENDING_SCAN = "state_pending_scan"
         private const val STATE_NOTIFICATION_IN_FLIGHT = "state_notification_in_flight"
         private const val STATE_NOTIFICATION_HANDLED = "state_notification_handled"

@@ -43,8 +43,10 @@ class ImagePreviewActivity : Activity() {
     private var receiverRegistered = false
     private val scanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == MediaScanService.ACTION_PROGRESS ||
-                intent?.action == MediaScanService.ACTION_COMPLETE
+            val action = intent?.action
+            val resultUpdated = intent?.getBooleanExtra(MediaScanService.EXTRA_RESULT_UPDATED, false) == true
+            if ((action == MediaScanService.ACTION_PROGRESS && resultUpdated) ||
+                action == MediaScanService.ACTION_COMPLETE
             ) {
                 reloadLatestAssets()
             }
@@ -118,11 +120,11 @@ class ImagePreviewActivity : Activity() {
      * 如果当前资源已被用户删除，优先停留在原位置附近；如果整组消失则安全关闭页面。
      */
     private fun reloadLatestAssets() {
-        val category = scanClient.loadProductCategory(categoryType) ?: run {
+        val category = loadLatestCategory() ?: run {
             finish()
             return
         }
-        val group = if (groupId > 0L) {
+        val group = if (groupId != 0L) {
             category.groups.firstOrNull { it.id == groupId }
         } else {
             category.groups.firstOrNull()
@@ -157,6 +159,15 @@ class ImagePreviewActivity : Activity() {
         imageView.setImageResource(android.R.color.transparent)
         scanClient.loadBitmap(asset, 1800)?.let { imageView.setImageBitmap(it) }
     }
+
+    private fun loadLatestCategory() =
+        if (MediaScanService.isRunning) {
+            scanClient.loadProgressiveProductCategory(categoryType)
+                ?.takeIf { it.itemCount > 0 }
+                ?: scanClient.loadProductCategory(categoryType)
+        } else {
+            scanClient.loadProductCategory(categoryType)
+        }
 
     private fun handleSwipe(event: MotionEvent): Boolean {
         when (event.action) {

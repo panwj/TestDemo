@@ -66,8 +66,10 @@ class GroupDetailActivity : Activity() {
     private val reloadGeneration = AtomicInteger(0)
     private val scanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == MediaScanService.ACTION_PROGRESS ||
-                intent?.action == MediaScanService.ACTION_COMPLETE
+            val action = intent?.action
+            val resultUpdated = intent?.getBooleanExtra(MediaScanService.EXTRA_RESULT_UPDATED, false) == true
+            if ((action == MediaScanService.ACTION_PROGRESS && resultUpdated) ||
+                action == MediaScanService.ACTION_COMPLETE
             ) {
                 reloadLatestCategory()
             }
@@ -172,7 +174,7 @@ class GroupDetailActivity : Activity() {
         val previewAssetLimit = if (categoryType.grouped) GROUP_ASSET_PAGE_SIZE else 0
         repeat(DB_READ_RETRY_COUNT) { attempt ->
             try {
-                return scanClient.loadProductCategory(categoryType, previewAssetLimit)
+                return loadLatestCategory(previewAssetLimit)
             } catch (_: SQLiteDatabaseLockedException) {
                 Thread.sleep(DB_READ_RETRY_DELAY_MS * (attempt + 1))
             } catch (_: IllegalStateException) {
@@ -180,8 +182,17 @@ class GroupDetailActivity : Activity() {
             }
         }
         return runCatching {
-            scanClient.loadProductCategory(categoryType, previewAssetLimit)
+            loadLatestCategory(previewAssetLimit)
         }.getOrNull()
+    }
+
+    private fun loadLatestCategory(previewAssetLimit: Int): ProductCategory? {
+        if (MediaScanService.isRunning) {
+            scanClient.loadProgressiveProductCategory(categoryType, previewAssetLimit)
+                ?.takeIf { it.itemCount > 0 }
+                ?.let { return it }
+        }
+        return scanClient.loadProductCategory(categoryType, previewAssetLimit)
     }
 
     private fun applyLatestCategory(latestCategory: ProductCategory) {

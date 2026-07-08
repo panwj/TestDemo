@@ -8,44 +8,93 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#071126"
+        android:background="@drawable/home_header_bg"
         android:orientation="vertical"
-        android:paddingLeft="16dp"
-        android:paddingTop="16dp"
-        android:paddingRight="16dp"
-        android:paddingBottom="12dp">
+        android:paddingLeft="14dp"
+        android:paddingTop="18dp"
+        android:paddingRight="14dp"
+        android:paddingBottom="14dp">
 
-        <TextView
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Your Storage"
-            android:textColor="#FFFFFF"
-            android:textSize="28sp"
-            android:textStyle="bold" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Your Storage"
+                android:textColor="#FFFFFF"
+                android:textSize="29sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="24dp"
+                android:background="@drawable/pro_badge"
+                android:gravity="center"
+                android:text="PRO"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_marginLeft="8dp"
+                android:gravity="center"
+                android:text="⚙"
+                android:textColor="#FFFFFF"
+                android:textSize="18sp" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/summaryText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="8dp"
             android:text="Scan your gallery and organize unnecessary media"
             android:textColor="#94A3B8"
             android:textSize="13sp" />
 
-        <ProgressBar
-            android:id="@+id/progressBar"
-            style="?android:attr/progressBarStyleHorizontal"
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="6dp"
+            android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:indeterminate="true"
-            android:visibility="gone" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ProgressBar
+                android:id="@+id/progressBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="0dp"
+                android:layout_height="5dp"
+                android:layout_weight="1"
+                android:indeterminate="true"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#38BDF8"
+                android:progressBackgroundTint="#102044"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/progressPercentText"
+                android:layout_width="44dp"
+                android:layout_height="wrap_content"
+                android:gravity="right"
+                android:text=""
+                android:textColor="#94A3B8"
+                android:textSize="11sp"
+                android:visibility="gone" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/statusText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="10dp"
             android:text="Allow access to photos and videos to start scanning."
             android:textColor="#64748B"
             android:textSize="12sp" />
@@ -53,13 +102,13 @@
         <Button
             android:id="@+id/scanButton"
             android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:layout_marginTop="10dp"
+            android:layout_height="48dp"
+            android:layout_marginTop="14dp"
             android:background="@drawable/button_primary"
             android:text="Allow access to Gallery"
             android:textAllCaps="false"
             android:textColor="#FFFFFF"
-            android:textSize="14sp" />
+            android:textSize="15sp" />
 
     </LinearLayout>
 
@@ -71,12 +120,13 @@
         android:clipToPadding="false"
         android:divider="@android:color/transparent"
         android:dividerHeight="0dp"
+        android:paddingTop="18dp"
         android:paddingBottom="12dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="78dp"
-        android:background="#071126"
+        android:layout_height="70dp"
+        android:background="@drawable/bottom_bar_bg"
         android:gravity="center"
         android:orientation="horizontal"
         android:paddingLeft="12dp"
@@ -85,7 +135,7 @@
         <Button
             android:id="@+id/photoTabButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="42dp"
             android:layout_weight="1"
             android:background="@drawable/tab_selected"
             android:text="Photo Swiping"
@@ -96,7 +146,7 @@
         <Button
             android:id="@+id/compressTabButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="42dp"
             android:layout_marginLeft="10dp"
             android:layout_weight="1"
             android:background="@drawable/tab_unselected"
@@ -108,7 +158,7 @@
         <Button
             android:id="@+id/contactsTabButton"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="42dp"
             android:layout_marginLeft="10dp"
             android:layout_weight="1"
             android:background="@drawable/tab_unselected"

@@ -12,6 +12,7 @@ import com.example.similarscandemo.GroupDetailActivity
 import com.example.similarscandemo.R
 import com.clean.similarscan.api.model.MediaKind
 import com.clean.similarscan.api.model.ProductCategory
+import com.clean.similarscan.api.model.ProductCategoryType
 import com.example.similarscandemo.util.FormatUtils
 
 /**
@@ -59,6 +60,7 @@ class ProductCategoryAdapter(
         }
 
         view.findViewById<TextView>(R.id.categoryTitle).text = category.type.title
+        view.findViewById<TextView>(R.id.categoryIcon).text = iconLabel(category.type)
         view.findViewById<TextView>(R.id.categoryStats).text =
             "${category.itemCount} $unit · ${FormatUtils.formatBytes(category.totalSize)}"
 
@@ -75,6 +77,18 @@ class ProductCategoryAdapter(
             )
         }
         return view
+    }
+
+    private fun iconLabel(type: ProductCategoryType): String {
+        return when (type) {
+            ProductCategoryType.SIMILAR -> "S"
+            ProductCategoryType.DUPLICATES -> "D"
+            ProductCategoryType.SIMILAR_SCREENSHOTS -> "SS"
+            ProductCategoryType.SIMILAR_VIDEOS -> "V"
+            ProductCategoryType.OTHER_SCREENSHOTS -> "OS"
+            ProductCategoryType.OTHER_VIDEOS -> "OV"
+            ProductCategoryType.OTHER -> "O"
+        }
     }
 
 }

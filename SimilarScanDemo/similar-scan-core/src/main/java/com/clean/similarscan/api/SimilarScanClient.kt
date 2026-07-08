@@ -35,8 +35,24 @@ interface SimilarScanClient : Closeable {
         previewAssetLimit: Int = Int.MAX_VALUE
     ): List<ProductCategory>
 
+    /**
+     * 读取本轮扫描中的轻量首页快照。
+     *
+     * 该结果只来自已经通过当前算法确认的候选边，用于扫描中快速展示；
+     * 扫描完成后的最终结果仍以 loadProductCategories/loadProductCategory 为准。
+     */
+    fun loadProgressiveProductCategories(
+        previewAssetLimit: Int = Int.MAX_VALUE
+    ): List<ProductCategory>
+
     /** 查询单个产品分类，详情页优先使用该接口，避免为了一个分类加载全部分类资源。 */
     fun loadProductCategory(
+        type: ProductCategoryType,
+        previewAssetLimit: Int = Int.MAX_VALUE
+    ): ProductCategory?
+
+    /** 读取本轮扫描中的单个分类快照。 */
+    fun loadProgressiveProductCategory(
         type: ProductCategoryType,
         previewAssetLimit: Int = Int.MAX_VALUE
     ): ProductCategory?

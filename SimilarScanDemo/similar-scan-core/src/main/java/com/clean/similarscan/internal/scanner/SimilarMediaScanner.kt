@@ -5,8 +5,10 @@ import android.os.Build
 import android.provider.MediaStore
 import com.clean.similarscan.internal.database.ScanDatabase
 import com.clean.similarscan.internal.database.AssetScanToken
+import com.clean.similarscan.internal.model.GroupCategory
 import com.clean.similarscan.internal.model.MediaAsset
 import com.clean.similarscan.internal.model.MediaKind
+import com.clean.similarscan.internal.model.ProductCategory
 import com.clean.similarscan.internal.model.ProductCategoryType
 import com.clean.similarscan.internal.model.ScanProgress
 import com.clean.similarscan.internal.model.ScanResult
@@ -55,6 +57,9 @@ internal class SimilarMediaScanner(context: Context) {
     private var lastIntermediateGroupPublishVisited = 0
     private var intermediateEdgesSinceLastPublish = 0
     private var intermediateGroupPublishCount = 0
+    private var lastProgressiveSnapshotAt = 0L
+    private var lastProgressiveSnapshotVisited = 0
+    private var progressiveSnapshotDirty = false
     private val imageComputeExecutor = Executors.newFixedThreadPool(
         IMAGE_COMPUTE_THREADS,
         NamedThreadFactory("similar-image")
@@ -121,6 +126,11 @@ internal class SimilarMediaScanner(context: Context) {
         lastIntermediateGroupPublishVisited = 0
         intermediateEdgesSinceLastPublish = 0
         intermediateGroupPublishCount = 0
+        lastProgressiveSnapshotAt = startedAt
+        lastProgressiveSnapshotVisited = 0
+        progressiveSnapshotDirty = false
+        ProgressiveScanSnapshotStore.start()
+        try {
         videoFingerprintCalculator.resetAdaptiveState()
 
         // 每次扫描从当前数据库指纹构建轻量 BK-Tree，确保图片候选按汉明距离完整召回。
@@ -142,6 +152,14 @@ internal class SimilarMediaScanner(context: Context) {
         metrics.measure("enumerate_and_fingerprint_total") {
             val pendingJobs = FingerprintJobScheduler()
             fun publishAndReportIfNeeded(): Boolean {
+                val snapshotUpdated = publishProgressiveSnapshotIfNeeded(
+                    visited = visited,
+                    estimatedAssetCount = maxOf(estimatedMediaCount, cachedAssetCount, visited),
+                    startedAt = startedAt,
+                    progress = progress
+                )
+                if (snapshotUpdated) return true
+
                 val resultUpdated = publishIntermediateGroupsIfNeeded(
                     enabled = enableIntermediateGroupPublish,
                     changedKinds = changedKinds,
@@ -345,6 +363,9 @@ internal class SimilarMediaScanner(context: Context) {
             elapsedTimeMs = elapsed,
             elapsedTimeText = elapsedText
         )
+        } finally {
+            ProgressiveScanSnapshotStore.finish()
+        }
     }
 
     private fun scanProgress(
@@ -390,6 +411,23 @@ internal class SimilarMediaScanner(context: Context) {
         previewAssetLimit: Int = Int.MAX_VALUE
     ) = database.loadGroups(productCategoryType, groupLimit, previewAssetLimit)
 
+    fun loadProgressiveProductCategories(previewAssetLimit: Int): List<ProductCategory> {
+        return ProgressiveScanSnapshotStore.categories(previewAssetLimit)
+    }
+
+    fun loadProgressiveProductCategory(
+        productCategoryType: ProductCategoryType,
+        previewAssetLimit: Int
+    ): ProductCategory? {
+        return ProgressiveScanSnapshotStore
+            .categories(previewAssetLimit)
+            .firstOrNull { it.type == productCategoryType }
+    }
+
+    fun removeProgressiveSnapshotUris(uris: Collection<String>) {
+        ProgressiveScanSnapshotStore.removeUris(uris)
+    }
+
     /**
      * 按产品分类分页读取资源。
      *
@@ -410,13 +448,20 @@ internal class SimilarMediaScanner(context: Context) {
         groupId: Long,
         offset: Int,
         limit: Int
-    ) = database.loadGroupAssetsPage(groupId, offset, limit)
+    ): List<MediaAsset> {
+        return if (groupId < 0L) {
+            ProgressiveScanSnapshotStore.groupAssetsPage(groupId, offset, limit)
+        } else {
+            database.loadGroupAssetsPage(groupId, offset, limit)
+        }
+    }
 
     /**
      * SimilarMediaScanner 持有 Room 数据库连接。前台服务每次扫描都会创建 scanner，
      * 扫描结束后必须显式关闭连接，避免系统在 GC 时报告数据库连接泄漏。
      */
     fun close() {
+        ProgressiveScanSnapshotStore.finish()
         imageComputeExecutor.shutdownNow()
         videoComputeExecutor.shutdownNow()
         database.close()
@@ -547,6 +592,13 @@ internal class SimilarMediaScanner(context: Context) {
             metrics.measure("link_duplicate_assets") {
                 database.linkDuplicateAssets(asset.kind, token.assetId, duplicateCandidateIds)
             }
+            recordProgressiveSnapshotEdges(
+                category = GroupCategory.DUPLICATE,
+                kind = asset.kind,
+                firstAssetId = token.assetId,
+                firstAsset = asset,
+                candidates = duplicateReferenceCandidates.map { it.assetId to it.asset }
+            )
             metrics.addCount("duplicate_edges", duplicateCandidateIds.size)
             intermediateEdgesSinceLastPublish += duplicateCandidateIds.size
         }
@@ -554,6 +606,17 @@ internal class SimilarMediaScanner(context: Context) {
             metrics.measure("link_similar_assets") {
                 database.linkSimilarAssets(asset.kind, token.assetId, similarCandidateIds)
             }
+            val similarCandidateAssets = database.loadCandidatesByIds(
+                assetIds = similarCandidateIds,
+                excludedAssetId = token.assetId
+            ).map { it.assetId to it.asset }
+            recordProgressiveSnapshotEdges(
+                category = GroupCategory.SIMILAR,
+                kind = asset.kind,
+                firstAssetId = token.assetId,
+                firstAsset = asset,
+                candidates = similarCandidateAssets
+            )
             metrics.addCount("similar_edges", similarCandidateIds.size)
             intermediateEdgesSinceLastPublish += similarCandidateIds.size
         }
@@ -645,9 +708,56 @@ internal class SimilarMediaScanner(context: Context) {
             metrics.measure("link_similar_assets") {
                 database.linkSimilarAssets(asset.kind, token.assetId, similarCandidateIds)
             }
+            recordProgressiveSnapshotEdges(
+                category = GroupCategory.SIMILAR,
+                kind = asset.kind,
+                firstAssetId = token.assetId,
+                firstAsset = asset,
+                candidates = similarCandidates.map { it.assetId to it.asset }
+            )
             metrics.addCount("similar_edges", similarCandidateIds.size)
             intermediateEdgesSinceLastPublish += similarCandidateIds.size
         }
+    }
+
+    private fun recordProgressiveSnapshotEdges(
+        category: GroupCategory,
+        kind: MediaKind,
+        firstAssetId: Long,
+        firstAsset: MediaAsset,
+        candidates: Collection<Pair<Long, MediaAsset>>
+    ) {
+        if (ProgressiveScanSnapshotStore.recordEdges(category, kind, firstAssetId, firstAsset, candidates)) {
+            progressiveSnapshotDirty = true
+        }
+    }
+
+    private fun publishProgressiveSnapshotIfNeeded(
+        visited: Int,
+        estimatedAssetCount: Int,
+        startedAt: Long,
+        progress: (ScanProgress) -> Unit
+    ): Boolean {
+        if (!progressiveSnapshotDirty || !ProgressiveScanSnapshotStore.hasVisibleGroups()) return false
+        val now = System.currentTimeMillis()
+        val policy = progressiveSnapshotPolicy(estimatedAssetCount)
+        if (now - lastProgressiveSnapshotAt < policy.intervalMs) return false
+        val assetDelta = visited - lastProgressiveSnapshotVisited
+        if (assetDelta < policy.minAssets) return false
+        progress(
+            scanProgress(
+                stage = ScanStage.MATCHING,
+                processedCount = visited,
+                discoveredGroupCount = ProgressiveScanSnapshotStore.groupCount(),
+                message = "Updating visible scan results for $visited scanned assets.",
+                resultUpdated = true,
+                startedAt = startedAt
+            )
+        )
+        lastProgressiveSnapshotAt = now
+        lastProgressiveSnapshotVisited = visited
+        progressiveSnapshotDirty = false
+        return true
     }
 
     /**
@@ -732,6 +842,26 @@ internal class SimilarMediaScanner(context: Context) {
         return requestedMax.coerceAtMost(adaptiveMax)
     }
 
+    private fun progressiveSnapshotPolicy(estimatedAssetCount: Int): ProgressiveSnapshotPolicy {
+        return if (lastProgressiveSnapshotVisited == 0) {
+            when {
+                estimatedAssetCount <= 500 -> ProgressiveSnapshotPolicy(800L, 20)
+                estimatedAssetCount <= 2_000 -> ProgressiveSnapshotPolicy(1_000L, 40)
+                estimatedAssetCount <= 10_000 -> ProgressiveSnapshotPolicy(1_500L, 80)
+                estimatedAssetCount <= 50_000 -> ProgressiveSnapshotPolicy(2_000L, 100)
+                else -> ProgressiveSnapshotPolicy(3_000L, 200)
+            }
+        } else {
+            when {
+                estimatedAssetCount <= 500 -> ProgressiveSnapshotPolicy(1_000L, 20)
+                estimatedAssetCount <= 2_000 -> ProgressiveSnapshotPolicy(1_500L, 50)
+                estimatedAssetCount <= 10_000 -> ProgressiveSnapshotPolicy(2_500L, 200)
+                estimatedAssetCount <= 50_000 -> ProgressiveSnapshotPolicy(5_000L, 750)
+                else -> ProgressiveSnapshotPolicy(8_000L, 1_500)
+            }
+        }
+    }
+
     private fun intermediatePublishPolicy(
         estimatedAssetCount: Int,
         firstIntervalMs: Long,
@@ -775,21 +905,21 @@ internal class SimilarMediaScanner(context: Context) {
                 )
             }
             return adaptiveFirst.copy(
-                intervalMs = adaptiveFirst.intervalMs.coerceAtMost(firstIntervalMs),
-                minAssets = adaptiveFirst.minAssets.coerceAtMost(firstMinAssets),
-                minEdges = adaptiveFirst.minEdges.coerceAtMost(firstMinEdges)
+                intervalMs = adaptiveFirst.intervalMs.coerceAtLeast(firstIntervalMs),
+                minAssets = adaptiveFirst.minAssets.coerceAtLeast(firstMinAssets),
+                minEdges = adaptiveFirst.minEdges.coerceAtLeast(firstMinEdges)
             )
         }
         return when {
             estimatedAssetCount <= 2_000 -> IntermediatePublishPolicy(
-                intervalMs = 30_000L.coerceAtMost(intervalMs),
-                minAssets = 500.coerceAtMost(minAssets),
-                minEdges = 1_000.coerceAtMost(minEdges)
+                intervalMs = 30_000L.coerceAtLeast(intervalMs),
+                minAssets = 500.coerceAtLeast(minAssets),
+                minEdges = 1_000.coerceAtLeast(minEdges)
             )
             estimatedAssetCount <= 10_000 -> IntermediatePublishPolicy(
-                intervalMs = 45_000L.coerceAtMost(intervalMs),
-                minAssets = 2_500.coerceAtMost(minAssets),
-                minEdges = 5_000.coerceAtMost(minEdges)
+                intervalMs = 45_000L.coerceAtLeast(intervalMs),
+                minAssets = 2_500.coerceAtLeast(minAssets),
+                minEdges = 5_000.coerceAtLeast(minEdges)
             )
             estimatedAssetCount <= 50_000 -> IntermediatePublishPolicy(
                 intervalMs = intervalMs,
@@ -965,13 +1095,13 @@ internal class SimilarMediaScanner(context: Context) {
         private const val DEFAULT_GROUP_LIMIT = Int.MAX_VALUE
         private const val IMAGE_COMPUTE_THREADS = 4
         private const val VIDEO_COMPUTE_THREADS = 2
-        private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS = 3_000L
-        private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_MIN_ASSETS = 100
+        private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS = 60_000L
+        private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_MIN_ASSETS = 5_000
         private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_MIN_EDGES = 1
-        private const val DEFAULT_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS = 75_000L
+        private const val DEFAULT_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS = 90_000L
         private const val DEFAULT_INTERMEDIATE_GROUP_PUBLISH_MIN_ASSETS = 10_000
         private const val DEFAULT_INTERMEDIATE_GROUP_PUBLISH_MIN_EDGES = 20_000
-        private const val DEFAULT_MAX_INTERMEDIATE_GROUP_PUBLISH_COUNT = 3
+        private const val DEFAULT_MAX_INTERMEDIATE_GROUP_PUBLISH_COUNT = 2
         private const val PROGRESS_INTERVAL_MS = 500L
         private const val IN_BATCH_COMMIT_CHECK_ASSET_DELTA = 25
         /*
@@ -995,6 +1125,11 @@ private data class IntermediatePublishPolicy(
         return !requireEdgesForAssetGate || edgeDelta > 0
     }
 }
+
+private data class ProgressiveSnapshotPolicy(
+    val intervalMs: Long,
+    val minAssets: Int
+)
 
 private data class VisualFingerprintResult(
     val hash: CombinedHash,

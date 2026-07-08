@@ -88,22 +88,20 @@ VIDEO_COMPUTE_THREADS = 2
 
 计算任务只做 Bitmap 加载、dHash/colorHash 或视频抽帧，不直接写 SQLite，不直接修改 BK-Tree。提交阶段仍由扫描线程串行执行，保证数据库、内存索引和 Similar/Duplicate 关系的更新顺序可控。扫描中不再逐边维护 `similar_group`，而是写入 `similar_candidate_edge`；批次边界按时间和增量阈值阶段性物化分组给 UI 展示，扫描完成后再批量构建最终分组。`ScanMetrics` 中 `process_visual_compute`、`process_video_compute` 是各工作线程耗时累加，可能大于真实墙钟耗时；总墙钟耗时以扫描汇总行的 `elapsed` 为准。
 
-阶段性分组发布默认开启，默认策略为：
+扫描中 UI 首屏和过程刷新优先使用内存 `ProgressiveScanSnapshotStore`。snapshot 只保存已经通过核心算法确认的 Similar/Duplicate 边相关资产，不保存全量 MediaStore 资源，不参与 dHash/阈值/BK-Tree 判断，也不替代最终数据库分组。为了避免 10 万级媒体库且候选边极多时内存持续增长，snapshot 增加硬上限：
 
 ```text
-enableIntermediateGroupPublish = true
-firstIntermediateGroupPublishIntervalMs = 3_000
-firstIntermediateGroupPublishMinAssets = 100
-firstIntermediateGroupPublishMinEdges = 1
-intermediateGroupPublishIntervalMs = 75_000
-intermediateGroupPublishMinAssets = 10000
-intermediateGroupPublishMinEdges = 20000
-maxIntermediateGroupPublishCount = 3
+MAX_SNAPSHOT_ASSETS = 150_000
+MAX_SNAPSHOT_EDGES = 450_000
 ```
 
-实际发布策略会先用 MediaStore `Cursor.count` 估算本轮媒体总数，再做自适应分档。中间 publish 不是每发现一组就刷新，而是在扫描线程提交候选边后，按“时间 + 新增资源数/候选边数 + 最多次数”节流触发 `rebuildSimilarGroups()`，把当前 `similar_candidate_edge` 阶段性物化到 `similar_group`。
+达到上限后，后续新发现的临时边不再继续加入 snapshot；这只影响扫描中临时展示的完整度，不影响 `similar_candidate_edge` 入库、最终 `rebuildSimilarGroups()` 和最终相似/相同结果。
 
-首次 publish 规则：
+DB 中间分组发布仍然保留，但定位为低频兜底：用于页面重建、snapshot 不可用或需要阶段性稳定入库结果时读取，不再作为快速首显主路径。
+
+历史上为提升扫描中体验，DB 中间发布曾采用更激进的自适应策略：首次发布会根据媒体总数动态提前，最小可在 1 到 5 秒、20 到 200 个新增扫描资源、至少 1 条候选边后触发；后续发布在小图库上也会压低到 30 到 45 秒和较小资源/边数门槛。这套方案的优点是无需额外 snapshot 读取路径，DB 内可以较早出现阶段性分组，首页/详情可以直接从 DB 看到中间结果。问题也很明显：每次 DB publish 都会执行 `rebuildSimilarGroups(finalPass = false)`，成本远高于内存 snapshot；在 3 万到 5 万资源场景下容易增加扫描耗时，也可能导致首页预览图跟随 DB 阶段性重建出现闪烁或新旧结果跳变。
+
+历史体验优先方案的首次 DB publish 分档：
 
 | 估算媒体总数 | 最小等待时间 | 新增扫描资源门槛 | 新增候选边门槛 |
 | --- | ---: | ---: | ---: |
@@ -113,15 +111,51 @@ maxIntermediateGroupPublishCount = 3
 | `<= 50,000` | 3 秒 | 100 | 1 |
 | `> 50,000` | 5 秒 | 200 | 1 |
 
-首次发布必须已经出现至少 1 条 Similar/Duplicate 候选边；如果当前扫描的前几百个资源互不相似，即使进度数量已经变化，也不会发布空分组。
-
-后续 publish 规则：
+历史体验优先方案的后续 DB publish 分档：
 
 | 估算媒体总数 | 最小间隔 | 距离上次新增资源门槛 | 距离上次新增候选边门槛 |
 | --- | ---: | ---: | ---: |
 | `<= 2,000` | 30 秒 | 500 | 1,000 |
 | `<= 10,000` | 45 秒 | 2,500 | 5,000 |
 | `<= 50,000` | 75 秒 | 10,000 | 20,000 |
+| `> 50,000` | 120 秒 | 20,000 | 40,000 |
+
+当前方案调整为：snapshot 负责“快”，DB 中间发布负责“稳”，最终 DB rebuild 负责“准”。因此 DB 中间发布只作为保守兜底，业务传入的 publish 参数被视为最低门槛，内部自适应策略只能让 DB publish 更保守，不能提前触发。
+
+SDK/demo 当前 DB 中间发布默认配置为：
+
+```text
+enableIntermediateGroupPublish = true
+firstIntermediateGroupPublishIntervalMs = 60_000
+firstIntermediateGroupPublishMinAssets = 5000
+firstIntermediateGroupPublishMinEdges = 1
+intermediateGroupPublishIntervalMs = 90_000
+intermediateGroupPublishMinAssets = 10000
+intermediateGroupPublishMinEdges = 20000
+maxIntermediateGroupPublishCount = 2
+```
+
+实际发布策略会先用 MediaStore `Cursor.count` 估算本轮媒体总数，再做自适应分档。请求参数表示业务允许的最低发布门槛，内部自适应门槛只会把 DB publish 做得更保守，不会抢在业务配置之前提前触发。中间 publish 不是每发现一组就刷新，而是在扫描线程提交候选边后，按“时间 + 新增资源数/候选边数 + 最多次数”节流触发 `rebuildSimilarGroups()`，把当前 `similar_candidate_edge` 阶段性物化到 `similar_group`。
+
+demo 配置下首次 DB publish 规则：
+
+| 估算媒体总数 | 最小等待时间 | 新增扫描资源门槛 | 新增候选边门槛 |
+| --- | ---: | ---: | ---: |
+| `<= 500` | 60 秒 | 5,000 | 1 |
+| `<= 2,000` | 60 秒 | 5,000 | 1 |
+| `<= 10,000` | 60 秒 | 5,000 | 1 |
+| `<= 50,000` | 60 秒 | 5,000 | 1 |
+| `> 50,000` | 60 秒 | 5,000 | 1 |
+
+首次发布必须已经出现至少 1 条 Similar/Duplicate 候选边；如果当前扫描的前几百个资源互不相似，即使进度数量已经变化，也不会发布空分组。
+
+demo 配置下后续 DB publish 规则：
+
+| 估算媒体总数 | 最小间隔 | 距离上次新增资源门槛 | 距离上次新增候选边门槛 |
+| --- | ---: | ---: | ---: |
+| `<= 2,000` | 90 秒 | 10,000 | 20,000 |
+| `<= 10,000` | 90 秒 | 10,000 | 20,000 |
+| `<= 50,000` | 90 秒 | 10,000 | 20,000 |
 | `> 50,000` | 120 秒 | 20,000 | 40,000 |
 
 后续发布需要先满足最小时间间隔；时间满足后，新增资源数或新增候选边数满足任一门槛即可发布。
@@ -133,9 +167,9 @@ maxIntermediateGroupPublishCount = 3
 | `<= 2,000` | 1 |
 | `<= 10,000` | 2 |
 | `<= 50,000` | 2 |
-| `> 50,000` | 3 |
+| `> 50,000` | 2 |
 
-普通进度广播只更新扫描数量和耗时，只有阶段性物化成功或最终扫描完成时，进度中的 `resultUpdated=true`，UI 才刷新首页分组，避免首页预览图随进度广播反复闪烁。
+普通进度广播只更新扫描数量和耗时，只有 progressive snapshot 发布、DB 阶段性物化成功或最终扫描完成时，进度中的 `resultUpdated=true`，UI 才刷新首页分组，避免首页预览图随进度广播反复闪烁。
 
 
 ## 3. MediaStore 枚举

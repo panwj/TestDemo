@@ -59,6 +59,12 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
             .map { it.toApi() }
     }
 
+    override fun loadProgressiveProductCategories(previewAssetLimit: Int): List<ProductCategory> {
+        return scanner
+            .loadProgressiveProductCategories(previewAssetLimit)
+            .map { it.toApi() }
+    }
+
     override fun loadProductCategory(
         type: ProductCategoryType,
         previewAssetLimit: Int
@@ -67,6 +73,16 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
         return ProductCategoryBuilder
             .build(scanner.loadCachedGroups(internalType, previewAssetLimit = previewAssetLimit))
             .firstOrNull { it.type.name == type.name }
+            ?.toApi()
+    }
+
+    override fun loadProgressiveProductCategory(
+        type: ProductCategoryType,
+        previewAssetLimit: Int
+    ): ProductCategory? {
+        val internalType = com.clean.similarscan.internal.model.ProductCategoryType.valueOf(type.name)
+        return scanner
+            .loadProgressiveProductCategory(internalType, previewAssetLimit)
             ?.toApi()
     }
 
@@ -96,10 +112,13 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
     }
 
     override fun markDeletePending(uris: Collection<String>): Set<String> {
-        return database().markDeletePending(uris)
+        return database().markDeletePending(uris).also { marked ->
+            scanner.removeProgressiveSnapshotUris(marked)
+        }
     }
 
     override fun finalizeDelete(uris: Collection<String>) {
+        scanner.removeProgressiveSnapshotUris(uris)
         database().finalizeDelete(uris)
     }
 
