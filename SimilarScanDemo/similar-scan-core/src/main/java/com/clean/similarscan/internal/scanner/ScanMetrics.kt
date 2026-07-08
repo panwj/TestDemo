@@ -59,6 +59,13 @@ internal class ScanMetrics {
         }
     }
 
+    fun addCount(name: String, count: Int) {
+        if (count <= 0) return
+        synchronized(this) {
+            counts[name] = (counts[name] ?: 0) + count
+        }
+    }
+
     private companion object {
         private const val TAG = "SimilarScanMetrics"
     }

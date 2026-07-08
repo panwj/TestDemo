@@ -13,5 +13,10 @@ internal enum class VideoFingerprintMode {
     /** 抽取更多时间点的帧，提高复杂视频的召回率。 */
     ACCURATE,
     /** 使用固定间隔的 7～13 帧规则，结果更稳定，适合产品级全量扫描。 */
-    REFERENCE_COMPAT
+    REFERENCE_COMPAT,
+    /**
+     * 自适应均衡模式。系统缩略图在当前设备上连续失败、成功率过低或耗时过高时，
+     * 本轮扫描自动跳过系统缩略图，直接使用 BALANCED 的 4 帧 MMR 路径。
+     */
+    ADAPTIVE_BALANCED
 }

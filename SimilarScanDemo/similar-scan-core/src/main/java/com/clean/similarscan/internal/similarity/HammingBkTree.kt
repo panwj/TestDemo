@@ -9,6 +9,7 @@ package com.clean.similarscan.internal.similarity
  */
 class HammingBkTree {
     private var root: Node? = null
+    private val pendingNodes = ArrayDeque<Node>()
 
     /**
      * 将资源的 64 位 dHash 插入树。
@@ -59,13 +60,15 @@ class HammingBkTree {
         excludedAssetIds: Set<Long> = emptySet(),
         result: MutableList<Long>,
         seenAssetIds: MutableSet<Long>? = null
-    ) {
-        val rootNode = root ?: return
-        val pending = ArrayDeque<Node>()
-        pending += rootNode
+    ): Int {
+        val rootNode = root ?: return 0
+        pendingNodes.clear()
+        pendingNodes += rootNode
 
-        while (pending.isNotEmpty()) {
-            val node = pending.removeFirst()
+        var visitedNodeCount = 0
+        while (pendingNodes.isNotEmpty()) {
+            val node = pendingNodes.removeFirst()
+            visitedNodeCount++
             val distance = hammingDistance(hash, node.hash)
             if (distance <= maxDistance) {
                 if (excludedAssetIds.isEmpty() && seenAssetIds == null) {
@@ -82,9 +85,10 @@ class HammingBkTree {
             val minimum = (distance - maxDistance).coerceAtLeast(0)
             val maximum = (distance + maxDistance).coerceAtMost(MAX_HAMMING_DISTANCE)
             for (edge in minimum..maximum) {
-                node.children[edge]?.let { child -> pending += child }
+                node.children[edge]?.let { child -> pendingNodes += child }
             }
         }
+        return visitedNodeCount
     }
 
     /** 64 位 dHash 的汉明距离。 */

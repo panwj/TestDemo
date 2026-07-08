@@ -105,6 +105,7 @@ internal fun InternalScanProgress.toApi(): ScanProgress {
         processedCount = processedCount,
         discoveredGroupCount = discoveredGroupCount,
         message = message,
+        resultUpdated = resultUpdated,
         elapsedTimeMs = elapsedTimeMs,
         elapsedTimeText = elapsedTimeText
     )

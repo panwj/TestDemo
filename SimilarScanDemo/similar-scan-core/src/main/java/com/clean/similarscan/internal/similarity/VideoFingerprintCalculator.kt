@@ -20,13 +20,19 @@ import kotlin.math.abs
  */
 internal class VideoFingerprintCalculator(context: Context) {
     private val appContext = context.applicationContext
+    private var adaptiveThumbnailGate = AdaptiveThumbnailGate()
+
+    fun resetAdaptiveState() {
+        adaptiveThumbnailGate = AdaptiveThumbnailGate()
+    }
 
     fun calculate(
         asset: MediaAsset,
-        mode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+        mode: VideoFingerprintMode = VideoFingerprintMode.BALANCED,
+        metricCounter: ((String) -> Unit)? = null
     ): VideoFingerprint {
-        val shouldLoadSystemThumbnail = mode != VideoFingerprintMode.REFERENCE_COMPAT
-        val thumbnailHash = if (shouldLoadSystemThumbnail) systemVideoThumbnail(asset)?.let { thumbnail ->
+        val shouldLoadSystemThumbnail = shouldLoadSystemThumbnail(mode, metricCounter)
+        val thumbnailHash = if (shouldLoadSystemThumbnail) timedSystemVideoThumbnail(asset, mode, metricCounter)?.let { thumbnail ->
             try {
                 HashCalculator.buildHash(thumbnail)
             } finally {
@@ -63,7 +69,7 @@ internal class VideoFingerprintCalculator(context: Context) {
                 ?: asset.duration.toDouble()
             val sampleTimesMs = buildSampleTimes(durationMs, mode)
             val hashes = ArrayList<CombinedHash>(sampleTimesMs.size + 1)
-            if (thumbnailHash?.isValid() == true && mode == VideoFingerprintMode.BALANCED) {
+            if (thumbnailHash?.isValid() == true && mode.usesBalancedThumbnailFrame()) {
                 hashes += thumbnailHash
             }
             var qualityScore = MediaQualityAnalyzer.metadataScore(asset)
@@ -122,6 +128,30 @@ internal class VideoFingerprintCalculator(context: Context) {
      * MediaStore.Video.Thumbnails。两者都可能命中系统/相册预热缓存，明显快于逐视频
      * MediaMetadataRetriever 多帧抽取。
      */
+    private fun timedSystemVideoThumbnail(
+        asset: MediaAsset,
+        mode: VideoFingerprintMode,
+        metricCounter: ((String) -> Unit)?
+    ): Bitmap? {
+        metricCounter?.invoke("video_thumbnail_attempt")
+        val startedAt = System.nanoTime()
+        val thumbnail = systemVideoThumbnail(asset)
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L
+        val success = thumbnail != null
+        if (success) {
+            metricCounter?.invoke("video_thumbnail_success")
+        } else {
+            metricCounter?.invoke("video_thumbnail_fail")
+        }
+        if (elapsedMs >= SLOW_THUMBNAIL_MS) {
+            metricCounter?.invoke("video_thumbnail_slow")
+        }
+        if (mode == VideoFingerprintMode.ADAPTIVE_BALANCED) {
+            adaptiveThumbnailGate.recordResult(success, elapsedMs)
+        }
+        return thumbnail
+    }
+
     private fun systemVideoThumbnail(asset: MediaAsset): Bitmap? {
         if (Build.VERSION.SDK_INT >= 29) {
             try {
@@ -177,12 +207,13 @@ internal class VideoFingerprintCalculator(context: Context) {
         mediaPath(asset)?.let { path ->
             val file = File(path)
             if (file.exists() && file.canRead()) {
-                return try {
+                val pathReady = try {
                     retriever.setDataSource(path)
                     true
                 } catch (_: RuntimeException) {
                     false
                 }
+                if (pathReady) return true
             }
         }
         return try {
@@ -206,6 +237,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         val positions = when (mode) {
             VideoFingerprintMode.FAST -> FAST_FALLBACK_POSITIONS
             VideoFingerprintMode.BALANCED -> BALANCED_POSITIONS
+            VideoFingerprintMode.ADAPTIVE_BALANCED -> BALANCED_POSITIONS
             VideoFingerprintMode.ACCURATE -> ACCURATE_POSITIONS
             VideoFingerprintMode.REFERENCE_COMPAT -> return buildReferenceSampleTimes(durationMs)
         }
@@ -362,7 +394,7 @@ internal class VideoFingerprintCalculator(context: Context) {
         mode: VideoFingerprintMode
     ): VideoFingerprintSource {
         val validFrameCount = frames.count(CombinedHash::isValid)
-        val validMmrFrameCount = if (hasSystemThumbnail && mode == VideoFingerprintMode.BALANCED) {
+        val validMmrFrameCount = if (hasSystemThumbnail && mode.usesBalancedThumbnailFrame()) {
             frames.drop(1).count(CombinedHash::isValid)
         } else {
             validFrameCount
@@ -370,14 +402,35 @@ internal class VideoFingerprintCalculator(context: Context) {
         return when {
             mode == VideoFingerprintMode.REFERENCE_COMPAT -> VideoFingerprintSource.REFERENCE_FRAMES
             hasSystemThumbnail && validMmrFrameCount == 0 -> VideoFingerprintSource.SYSTEM_THUMBNAIL
-            hasSystemThumbnail && mode == VideoFingerprintMode.BALANCED -> VideoFingerprintSource.HYBRID_THUMBNAIL_AND_FRAMES
+            hasSystemThumbnail && mode.usesBalancedThumbnailFrame() -> VideoFingerprintSource.HYBRID_THUMBNAIL_AND_FRAMES
             else -> VideoFingerprintSource.MMR_FRAMES
+        }
+    }
+
+    private fun shouldLoadSystemThumbnail(
+        mode: VideoFingerprintMode,
+        metricCounter: ((String) -> Unit)?
+    ): Boolean {
+        return when (mode) {
+            VideoFingerprintMode.REFERENCE_COMPAT -> false
+            VideoFingerprintMode.ACCURATE -> true
+            VideoFingerprintMode.ADAPTIVE_BALANCED -> {
+                val enabled = adaptiveThumbnailGate.shouldAttempt()
+                if (!enabled) metricCounter?.invoke("video_thumbnail_adaptive_skipped")
+                enabled
+            }
+            VideoFingerprintMode.FAST,
+            VideoFingerprintMode.BALANCED -> true
         }
     }
 
     /** 固定间隔模式保留无效占位，其它模式过滤低信息量帧以降低误合并。 */
     private fun VideoFingerprintMode.shouldFilterLowInformationFrames(): Boolean {
         return this != VideoFingerprintMode.REFERENCE_COMPAT
+    }
+
+    private fun VideoFingerprintMode.usesBalancedThumbnailFrame(): Boolean {
+        return this == VideoFingerprintMode.BALANCED || this == VideoFingerprintMode.ADAPTIVE_BALANCED
     }
 
     /** 生成稳定的无效指纹对象，避免上层处理 null。 */
@@ -389,6 +442,7 @@ internal class VideoFingerprintCalculator(context: Context) {
     private companion object {
         const val MICROSECONDS_PER_MILLISECOND = 1_000.0
         const val SYSTEM_THUMBNAIL_SIZE = 512
+        const val SLOW_THUMBNAIL_MS = 1_500L
         const val HASH_WIDTH = 9
         const val HASH_HEIGHT = 8
         const val LOW_INFORMATION_LUMA_RANGE = 8
@@ -401,5 +455,56 @@ internal class VideoFingerprintCalculator(context: Context) {
         val BALANCED_POSITIONS = listOf(0.12, 0.38, 0.64, 0.88)
         val ACCURATE_POSITIONS = listOf(0.08, 0.22, 0.36, 0.50, 0.64, 0.78, 0.92)
         val INVALID_HASH = CombinedHash(-1L, emptyArray())
+    }
+}
+
+/**
+ * 本轮扫描内的系统视频缩略图自适应开关。
+ *
+ * 部分设备上 MediaProvider 生成/读取视频缩略图会慢失败。该类在失败和慢耗时足够明确时
+ * 关闭后续缩略图尝试，让 ADAPTIVE_BALANCED 直接进入 4 帧 MMR 路径。
+ */
+private class AdaptiveThumbnailGate {
+    private var attempts = 0
+    private var successes = 0
+    private var consecutiveFailures = 0
+    private var totalElapsedMs = 0L
+    private var disabled = false
+
+    @Synchronized
+    fun shouldAttempt(): Boolean = !disabled
+
+    @Synchronized
+    fun recordResult(success: Boolean, elapsedMs: Long) {
+        if (disabled) return
+        attempts++
+        totalElapsedMs += elapsedMs
+        if (success) {
+            successes++
+            consecutiveFailures = 0
+        } else {
+            consecutiveFailures++
+        }
+        if (shouldDisable(elapsedMs)) {
+            disabled = true
+        }
+    }
+
+    private fun shouldDisable(lastElapsedMs: Long): Boolean {
+        if (lastElapsedMs >= SINGLE_SLOW_FAILURE_MS) return true
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return true
+        if (attempts < MIN_DECISION_ATTEMPTS) return false
+
+        val successRate = successes.toDouble() / attempts.toDouble()
+        val averageElapsedMs = totalElapsedMs.toDouble() / attempts.toDouble()
+        return successRate < MIN_SUCCESS_RATE || averageElapsedMs > MAX_AVERAGE_ELAPSED_MS
+    }
+
+    private companion object {
+        const val MIN_DECISION_ATTEMPTS = 8
+        const val MAX_CONSECUTIVE_FAILURES = 5
+        const val MIN_SUCCESS_RATE = 0.30
+        const val MAX_AVERAGE_ELAPSED_MS = 800.0
+        const val SINGLE_SLOW_FAILURE_MS = 1_500L
     }
 }

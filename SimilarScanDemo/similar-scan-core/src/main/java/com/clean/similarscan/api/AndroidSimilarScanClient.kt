@@ -32,6 +32,14 @@ internal class AndroidSimilarScanClient(context: Context) : SimilarScanClient {
             imageFingerprintSize = request.normalizedImageFingerprintSize,
             calculateDuplicateSha256DuringScan = request.calculateDuplicateSha256DuringScan,
             videoFingerprintMode = InternalVideoFingerprintMode.valueOf(request.videoFingerprintMode.name),
+            enableIntermediateGroupPublish = request.enableIntermediateGroupPublish,
+            firstIntermediateGroupPublishIntervalMs = request.normalizedFirstIntermediateGroupPublishIntervalMs,
+            firstIntermediateGroupPublishMinAssets = request.normalizedFirstIntermediateGroupPublishMinAssets,
+            firstIntermediateGroupPublishMinEdges = request.normalizedFirstIntermediateGroupPublishMinEdges,
+            intermediateGroupPublishIntervalMs = request.normalizedIntermediateGroupPublishIntervalMs,
+            intermediateGroupPublishMinAssets = request.normalizedIntermediateGroupPublishMinAssets,
+            intermediateGroupPublishMinEdges = request.normalizedIntermediateGroupPublishMinEdges,
+            maxIntermediateGroupPublishCount = request.normalizedMaxIntermediateGroupPublishCount,
             enableMetricsLog = request.enableMetricsLog
         ) { progress ->
             observer.onProgress(progress.toApi())

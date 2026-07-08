@@ -25,7 +25,6 @@ class CategoryPreviewAdapter(
             .inflate(R.layout.item_category_preview, parent, false)
         val asset = getItem(position)
         val image = view.findViewById<ImageView>(R.id.categoryPreviewImage)
-        image.setImageResource(android.R.color.transparent)
         // 首页滑动时不能同步解码缩略图，统一交给异步缓存加载器处理。
         ThumbLoader.loadBitmap(image, asset, 360)
         return view

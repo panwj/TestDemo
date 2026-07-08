@@ -51,6 +51,10 @@ internal class SimilarMediaScanner(context: Context) {
     private var visualHashCache: MutableMap<MediaKind, MutableMap<Long, CombinedHash>> = mutableMapOf()
     private val candidateIdsBuffer = ArrayList<Long>(256)
     private val candidateSeenBuffer = HashSet<Long>(256)
+    private var lastIntermediateGroupPublishAt = 0L
+    private var lastIntermediateGroupPublishVisited = 0
+    private var intermediateEdgesSinceLastPublish = 0
+    private var intermediateGroupPublishCount = 0
     private val imageComputeExecutor = Executors.newFixedThreadPool(
         IMAGE_COMPUTE_THREADS,
         NamedThreadFactory("similar-image")
@@ -72,6 +76,14 @@ internal class SimilarMediaScanner(context: Context) {
         imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
         calculateDuplicateSha256DuringScan: Boolean = false,
         videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED,
+        enableIntermediateGroupPublish: Boolean = true,
+        firstIntermediateGroupPublishIntervalMs: Long = DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS,
+        firstIntermediateGroupPublishMinAssets: Int = DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_MIN_ASSETS,
+        firstIntermediateGroupPublishMinEdges: Int = DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_MIN_EDGES,
+        intermediateGroupPublishIntervalMs: Long = DEFAULT_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS,
+        intermediateGroupPublishMinAssets: Int = DEFAULT_INTERMEDIATE_GROUP_PUBLISH_MIN_ASSETS,
+        intermediateGroupPublishMinEdges: Int = DEFAULT_INTERMEDIATE_GROUP_PUBLISH_MIN_EDGES,
+        maxIntermediateGroupPublishCount: Int = DEFAULT_MAX_INTERMEDIATE_GROUP_PUBLISH_COUNT,
         enableMetricsLog: Boolean = true,
         progress: (ScanProgress) -> Unit = {}
     ): ScanResult {
@@ -84,19 +96,32 @@ internal class SimilarMediaScanner(context: Context) {
         } else {
             "legacy"
         }
+        val cachedAssetCount = database.assetCount()
         val fullScan = forceFull ||
-            database.assetCount() == 0 ||
+            cachedAssetCount == 0 ||
             !hasFullVisualAccess ||
             scanStateStore.shouldRunFullScan(mediaStoreVersion)
         val imageGenerationAfter = if (fullScan) 0L else checkpoint.imageGeneration
         val videoGenerationAfter = if (fullScan) 0L else checkpoint.videoGeneration
         var maxImageGeneration = checkpoint.imageGeneration
         var maxVideoGeneration = checkpoint.videoGeneration
+        val metrics = ScanMetrics()
+        val estimatedMediaCount = metrics.measure("estimate_media_count") {
+            repository.estimateMediaCount(imageGenerationAfter, videoGenerationAfter)
+        }
         var visited = 0
         var fingerprinted = 0
         var skippedUnchanged = 0
+        var lastProgressAt = startedAt
+        var lastProgressVisited = 0
+        val progressAssetDelta = adaptiveProgressAssetDelta(estimatedMediaCount)
         val changedKinds = linkedSetOf<MediaKind>()
-        val metrics = ScanMetrics()
+        var publishedGroupCount = database.groupCount()
+        lastIntermediateGroupPublishAt = startedAt
+        lastIntermediateGroupPublishVisited = 0
+        intermediateEdgesSinceLastPublish = 0
+        intermediateGroupPublishCount = 0
+        videoFingerprintCalculator.resetAdaptiveState()
 
         // 每次扫描从当前数据库指纹构建轻量 BK-Tree，确保图片候选按汉明距离完整召回。
         visualIndexes = mutableMapOf(
@@ -109,30 +134,74 @@ internal class SimilarMediaScanner(context: Context) {
             scanProgress(
                 stage = ScanStage.ENUMERATING,
                 processedCount = 0,
-                discoveredGroupCount = database.groupCount(),
+                discoveredGroupCount = publishedGroupCount,
                 message = "Starting $modeName MediaStore scan.",
                 startedAt = startedAt
             )
         )
         metrics.measure("enumerate_and_fingerprint_total") {
             val pendingJobs = FingerprintJobScheduler()
+            fun publishAndReportIfNeeded(): Boolean {
+                val resultUpdated = publishIntermediateGroupsIfNeeded(
+                    enabled = enableIntermediateGroupPublish,
+                    changedKinds = changedKinds,
+                    imageFingerprintSize = imageFingerprintSize,
+                    videoFingerprintMode = videoFingerprintMode,
+                    metrics = metrics,
+                    visited = visited,
+                    startedAt = startedAt,
+                    estimatedAssetCount = maxOf(estimatedMediaCount, cachedAssetCount, visited),
+                    firstIntervalMs = firstIntermediateGroupPublishIntervalMs,
+                    firstMinAssets = firstIntermediateGroupPublishMinAssets,
+                    firstMinEdges = firstIntermediateGroupPublishMinEdges,
+                    intervalMs = intermediateGroupPublishIntervalMs,
+                    minAssets = intermediateGroupPublishMinAssets,
+                    minEdges = intermediateGroupPublishMinEdges,
+                    maxPublishCount = maxIntermediateGroupPublishCount
+                )
+                if (!resultUpdated) return false
+
+                publishedGroupCount = database.groupCount()
+                progress(
+                    scanProgress(
+                        stage = ScanStage.MATCHING,
+                        processedCount = visited,
+                        discoveredGroupCount = publishedGroupCount,
+                        message = "Publishing partial groups for $visited scanned assets.",
+                        resultUpdated = true,
+                        startedAt = startedAt
+                    )
+                )
+                lastProgressAt = System.currentTimeMillis()
+                lastProgressVisited = visited
+                return true
+            }
+
             repository.forEachMediaBatch(
                 batchSize = BATCH_SIZE,
                 imageGenerationAfter = imageGenerationAfter,
                 videoGenerationAfter = videoGenerationAfter
             ) { batch ->
-                progress(
-                    scanProgress(
-                        stage = ScanStage.FINGERPRINTING,
-                        processedCount = visited,
-                        discoveredGroupCount = database.groupCount(),
-                        message = "Processing batch of ${batch.size} assets.",
-                        startedAt = startedAt
-                    )
-                )
-
                 batch.forEach { asset ->
                     visited++
+                    val now = System.currentTimeMillis()
+                    if (
+                        visited == 1 ||
+                        visited - lastProgressVisited >= progressAssetDelta ||
+                        now - lastProgressAt >= PROGRESS_INTERVAL_MS
+                    ) {
+                        progress(
+                            scanProgress(
+                                stage = ScanStage.FINGERPRINTING,
+                                processedCount = visited,
+                                discoveredGroupCount = publishedGroupCount,
+                                message = scanProgressMessage(visited, estimatedMediaCount),
+                                startedAt = startedAt
+                            )
+                        )
+                        lastProgressAt = now
+                        lastProgressVisited = visited
+                    }
                     if (asset.kind == MediaKind.PHOTO || asset.kind == MediaKind.SCREENSHOT) {
                         maxImageGeneration = maxOf(maxImageGeneration, asset.generationModified)
                     } else {
@@ -179,6 +248,7 @@ internal class SimilarMediaScanner(context: Context) {
                             videoFingerprintMode,
                             preferredType = jobType
                         )
+                        publishAndReportIfNeeded()
                     }
                     if (jobType == FingerprintJobType.VIDEO) {
                         pendingJobs.add(submitVideoJob(token, asset, metrics, videoFingerprintMode))
@@ -186,6 +256,15 @@ internal class SimilarMediaScanner(context: Context) {
                         pendingJobs.add(submitVisualJob(token, asset, metrics, imageFingerprintSize))
                     }
                     fingerprinted++
+                    if (visited % IN_BATCH_COMMIT_CHECK_ASSET_DELTA == 0) {
+                        commitCompletedJobs(
+                            pendingJobs,
+                            metrics,
+                            calculateDuplicateSha256DuringScan,
+                            videoFingerprintMode
+                        )
+                        publishAndReportIfNeeded()
+                    }
                 }
                 commitCompletedJobs(
                     pendingJobs,
@@ -193,12 +272,13 @@ internal class SimilarMediaScanner(context: Context) {
                     calculateDuplicateSha256DuringScan,
                     videoFingerprintMode
                 )
+                publishAndReportIfNeeded()
 
                 progress(
                     scanProgress(
                         stage = ScanStage.MATCHING,
                         processedCount = visited,
-                        discoveredGroupCount = database.groupCount(),
+                        discoveredGroupCount = publishedGroupCount,
                         message = "Scanned $visited assets. $fingerprinted updated, $skippedUnchanged reused.",
                         startedAt = startedAt
                     )
@@ -212,6 +292,7 @@ internal class SimilarMediaScanner(context: Context) {
                     videoFingerprintMode,
                     preferredType = null
                 )
+                publishAndReportIfNeeded()
             }
         }
 
@@ -219,11 +300,12 @@ internal class SimilarMediaScanner(context: Context) {
             metrics.measure("remove_assets_not_seen") { database.removeAssetsNotSeenInScan(scanToken) }
         }
         /*
-         * 扫描过程中先增量写组以便 UI 及时展示；完成阶段再按当前规则的“时间排序 +
-         * 锚点直接相似”规则确定性重建本轮涉及类型，避免结果受扫描顺序影响。
+         * 扫描过程中先写 candidate edge，并按节流策略阶段性物化给 UI 展示；完成阶段再按
+         * 当前规则的“时间排序 + 锚点直接相似”规则确定性重建本轮涉及类型，避免结果受扫描
+         * 顺序和中间刷新时机影响。
          */
         metrics.measure("rebuild_similar_groups") {
-            database.rebuildSimilarGroups(changedKinds, imageFingerprintSize, videoFingerprintMode)
+            database.rebuildSimilarGroups(changedKinds, imageFingerprintSize, videoFingerprintMode, metrics)
         }
         metrics.measure("cleanup_invalid_groups") { database.cleanupInvalidGroups() }
         scanStateStore.save(
@@ -251,6 +333,7 @@ internal class SimilarMediaScanner(context: Context) {
                 processedCount = visited,
                 discoveredGroupCount = groups.size,
                 message = "Completed $modeName media scan.",
+                resultUpdated = true,
                 elapsedTimeMs = elapsed,
                 elapsedTimeText = elapsedText
             )
@@ -269,6 +352,7 @@ internal class SimilarMediaScanner(context: Context) {
         processedCount: Int,
         discoveredGroupCount: Int,
         message: String,
+        resultUpdated: Boolean = false,
         startedAt: Long
     ): ScanProgress {
         val elapsed = System.currentTimeMillis() - startedAt
@@ -277,6 +361,7 @@ internal class SimilarMediaScanner(context: Context) {
             processedCount = processedCount,
             discoveredGroupCount = discoveredGroupCount,
             message = message,
+            resultUpdated = resultUpdated,
             elapsedTimeMs = elapsed,
             elapsedTimeText = ScanElapsedFormatter.format(elapsed)
         )
@@ -350,6 +435,7 @@ internal class SimilarMediaScanner(context: Context) {
     ): PendingFingerprintJob {
         return PendingFingerprintJob(
             type = FingerprintJobType.IMAGE,
+            token = token,
             future = imageComputeExecutor.submit(Callable<ComputedFingerprint> {
                 metrics.measure("process_visual_compute") {
                     VisualComputedFingerprint(
@@ -411,9 +497,10 @@ internal class SimilarMediaScanner(context: Context) {
             }
         }
 
-        val duplicateIds = duplicateReferenceCandidates.mapTo(mutableSetOf()) { it.assetId }
-        val excludedCandidateIds = duplicateIds + token.assetId
+        val excludedCandidateIds = duplicateReferenceCandidates.mapTo(mutableSetOf()) { it.assetId }
+        excludedCandidateIds += token.assetId
         val candidateIds = metrics.measure("bk_tree_visual_query") {
+            metrics.increment("visual_bk_query")
             candidateIdsBuffer.clear()
             candidateSeenBuffer.clear()
             visualIndexes
@@ -425,6 +512,11 @@ internal class SimilarMediaScanner(context: Context) {
                     candidateIdsBuffer,
                     candidateSeenBuffer
                 )
+                .also { visitedNodes ->
+                    metrics.addCount("visual_bk_nodes", visitedNodes)
+                }
+            metrics.addCount("visual_bk_candidates", candidateIdsBuffer.size)
+            if (candidateIdsBuffer.isEmpty()) metrics.increment("visual_bk_empty_result")
             candidateIdsBuffer
         }
         val similarCandidateIds = metrics.measure("filter_visual_candidates_in_memory") {
@@ -450,11 +542,20 @@ internal class SimilarMediaScanner(context: Context) {
         }
         if (!committed) return
 
-        duplicateReferenceCandidates.forEach { candidate ->
-            database.linkDuplicateAssets(asset.kind, token.assetId, candidate.assetId)
+        val duplicateCandidateIds = duplicateReferenceCandidates.map { it.assetId }
+        if (duplicateCandidateIds.isNotEmpty()) {
+            metrics.measure("link_duplicate_assets") {
+                database.linkDuplicateAssets(asset.kind, token.assetId, duplicateCandidateIds)
+            }
+            metrics.addCount("duplicate_edges", duplicateCandidateIds.size)
+            intermediateEdgesSinceLastPublish += duplicateCandidateIds.size
         }
-        similarCandidateIds.forEach { candidateId ->
-            database.linkSimilarAssets(asset.kind, token.assetId, candidateId)
+        if (similarCandidateIds.isNotEmpty()) {
+            metrics.measure("link_similar_assets") {
+                database.linkSimilarAssets(asset.kind, token.assetId, similarCandidateIds)
+            }
+            metrics.addCount("similar_edges", similarCandidateIds.size)
+            intermediateEdgesSinceLastPublish += similarCandidateIds.size
         }
         visualIndexes.getValue(asset.kind).add(token.assetId, visual.hash.imageHash)
         visualHashCache.getValue(asset.kind)[token.assetId] = visual.hash
@@ -478,13 +579,14 @@ internal class SimilarMediaScanner(context: Context) {
          */
         return PendingFingerprintJob(
             type = FingerprintJobType.VIDEO,
+            token = token,
             future = videoComputeExecutor.submit(Callable<ComputedFingerprint> {
                 metrics.measure("process_video_compute") {
                     VideoComputedFingerprint(
                         token = token,
                         asset = asset,
                         fingerprint = metrics.measure("calculate_video_fingerprint") {
-                            videoFingerprintCalculator.calculate(asset, videoFingerprintMode)
+                            videoFingerprintCalculator.calculate(asset, videoFingerprintMode, metrics::increment)
                         }
                     )
                 }
@@ -538,8 +640,184 @@ internal class SimilarMediaScanner(context: Context) {
         ) {
             return
         }
-        similarCandidates.forEach { candidate ->
-            database.linkSimilarAssets(asset.kind, token.assetId, candidate.assetId)
+        val similarCandidateIds = similarCandidates.map { it.assetId }
+        if (similarCandidateIds.isNotEmpty()) {
+            metrics.measure("link_similar_assets") {
+                database.linkSimilarAssets(asset.kind, token.assetId, similarCandidateIds)
+            }
+            metrics.addCount("similar_edges", similarCandidateIds.size)
+            intermediateEdgesSinceLastPublish += similarCandidateIds.size
+        }
+    }
+
+    /**
+     * 将扫描中已累计的候选边阶段性物化为 UI 可读取的 Similar/Duplicate 分组。
+     *
+     * 这里复用最终重建的 edge-table 路径，只在批次边界按“时间 + 资源数/边数”节流触发，
+     * 避免回到每条边都维护 group 的高成本模式。
+     */
+    private fun publishIntermediateGroupsIfNeeded(
+        enabled: Boolean,
+        changedKinds: Set<MediaKind>,
+        imageFingerprintSize: Int,
+        videoFingerprintMode: VideoFingerprintMode,
+        metrics: ScanMetrics,
+        visited: Int,
+        startedAt: Long,
+        estimatedAssetCount: Int,
+        firstIntervalMs: Long,
+        firstMinAssets: Int,
+        firstMinEdges: Int,
+        intervalMs: Long,
+        minAssets: Int,
+        minEdges: Int,
+        maxPublishCount: Int
+    ): Boolean {
+        if (!enabled || changedKinds.isEmpty()) return false
+        val adaptiveMaxPublishCount = adaptiveIntermediateMaxPublishCount(estimatedAssetCount, maxPublishCount)
+        if (intermediateGroupPublishCount >= adaptiveMaxPublishCount) return false
+        val policy = intermediatePublishPolicy(
+            estimatedAssetCount = estimatedAssetCount,
+            firstIntervalMs = firstIntervalMs,
+            firstMinAssets = firstMinAssets,
+            firstMinEdges = firstMinEdges,
+            intervalMs = intervalMs,
+            minAssets = minAssets,
+            minEdges = minEdges
+        )
+        val now = System.currentTimeMillis()
+        if (now - lastIntermediateGroupPublishAt < policy.intervalMs) return false
+
+        val assetDelta = visited - lastIntermediateGroupPublishVisited
+        if (!policy.shouldPublish(assetDelta, intermediateEdgesSinceLastPublish)) return false
+
+        metrics.measure("intermediate_group_publish") {
+            database.rebuildSimilarGroups(
+                changedKinds,
+                imageFingerprintSize,
+                videoFingerprintMode,
+                metrics,
+                finalPass = false
+            )
+        }
+        metrics.increment("intermediate_group_publish_count")
+        metrics.increment(
+            if (intermediateGroupPublishCount == 0) {
+                "intermediate_group_publish_first"
+            } else {
+                "intermediate_group_publish_subsequent"
+            }
+        )
+        metrics.addCount("intermediate_group_publish_assets", assetDelta)
+        metrics.addCount("intermediate_group_publish_edges", intermediateEdgesSinceLastPublish)
+        if (intermediateGroupPublishCount == 0) {
+            metrics.addCount("intermediate_group_publish_first_elapsed_ms", (now - startedAt).toInt())
+            metrics.addCount("intermediate_group_publish_first_assets", assetDelta)
+            metrics.addCount("intermediate_group_publish_first_edges", intermediateEdgesSinceLastPublish)
+        }
+        lastIntermediateGroupPublishAt = System.currentTimeMillis()
+        lastIntermediateGroupPublishVisited = visited
+        intermediateEdgesSinceLastPublish = 0
+        intermediateGroupPublishCount++
+        return true
+    }
+
+    private fun adaptiveIntermediateMaxPublishCount(estimatedAssetCount: Int, requestedMax: Int): Int {
+        val adaptiveMax = when {
+            estimatedAssetCount <= 2_000 -> 1
+            estimatedAssetCount <= 10_000 -> 2
+            estimatedAssetCount <= 50_000 -> 2
+            else -> 3
+        }
+        return requestedMax.coerceAtMost(adaptiveMax)
+    }
+
+    private fun intermediatePublishPolicy(
+        estimatedAssetCount: Int,
+        firstIntervalMs: Long,
+        firstMinAssets: Int,
+        firstMinEdges: Int,
+        intervalMs: Long,
+        minAssets: Int,
+        minEdges: Int
+    ): IntermediatePublishPolicy {
+        if (intermediateGroupPublishCount == 0) {
+            val adaptiveFirst = when {
+                estimatedAssetCount <= 500 -> IntermediatePublishPolicy(
+                    intervalMs = 1_000L,
+                    minAssets = 20,
+                    minEdges = 1,
+                    requireEdgesForAssetGate = true
+                )
+                estimatedAssetCount <= 2_000 -> IntermediatePublishPolicy(
+                    intervalMs = 1_500L,
+                    minAssets = 40,
+                    minEdges = 1,
+                    requireEdgesForAssetGate = true
+                )
+                estimatedAssetCount <= 10_000 -> IntermediatePublishPolicy(
+                    intervalMs = 2_000L,
+                    minAssets = 80,
+                    minEdges = 1,
+                    requireEdgesForAssetGate = true
+                )
+                estimatedAssetCount <= 50_000 -> IntermediatePublishPolicy(
+                    intervalMs = 3_000L,
+                    minAssets = 100,
+                    minEdges = 1,
+                    requireEdgesForAssetGate = true
+                )
+                else -> IntermediatePublishPolicy(
+                    intervalMs = 5_000L,
+                    minAssets = 200,
+                    minEdges = 1,
+                    requireEdgesForAssetGate = true
+                )
+            }
+            return adaptiveFirst.copy(
+                intervalMs = adaptiveFirst.intervalMs.coerceAtMost(firstIntervalMs),
+                minAssets = adaptiveFirst.minAssets.coerceAtMost(firstMinAssets),
+                minEdges = adaptiveFirst.minEdges.coerceAtMost(firstMinEdges)
+            )
+        }
+        return when {
+            estimatedAssetCount <= 2_000 -> IntermediatePublishPolicy(
+                intervalMs = 30_000L.coerceAtMost(intervalMs),
+                minAssets = 500.coerceAtMost(minAssets),
+                minEdges = 1_000.coerceAtMost(minEdges)
+            )
+            estimatedAssetCount <= 10_000 -> IntermediatePublishPolicy(
+                intervalMs = 45_000L.coerceAtMost(intervalMs),
+                minAssets = 2_500.coerceAtMost(minAssets),
+                minEdges = 5_000.coerceAtMost(minEdges)
+            )
+            estimatedAssetCount <= 50_000 -> IntermediatePublishPolicy(
+                intervalMs = intervalMs,
+                minAssets = minAssets,
+                minEdges = minEdges
+            )
+            else -> IntermediatePublishPolicy(
+                intervalMs = 120_000L.coerceAtLeast(intervalMs),
+                minAssets = 20_000.coerceAtLeast(minAssets),
+                minEdges = 40_000.coerceAtLeast(minEdges)
+            )
+        }
+    }
+
+    private fun adaptiveProgressAssetDelta(estimatedAssetCount: Int): Int {
+        return when {
+            estimatedAssetCount <= 500 -> 10
+            estimatedAssetCount <= 2_000 -> 25
+            estimatedAssetCount <= 10_000 -> 100
+            else -> 250
+        }
+    }
+
+    private fun scanProgressMessage(visited: Int, estimatedMediaCount: Int): String {
+        return if (estimatedMediaCount > 0) {
+            "Scanning $visited of $estimatedMediaCount media."
+        } else {
+            "Scanning $visited media."
         }
     }
 
@@ -556,7 +834,17 @@ internal class SimilarMediaScanner(context: Context) {
         preferredType: FingerprintJobType?
     ) {
         val job = pendingJobs.removeNext(preferredType)
-        when (val result = job.await()) {
+        val result = try {
+            job.await()
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
+        } catch (_: Exception) {
+            metrics.increment("fingerprint_job_failed")
+            database.markFingerprintFailed(job.token)
+            return
+        }
+        when (result) {
             is VisualComputedFingerprint -> {
                 metrics.measure("process_visual") {
                     commitVisualResult(result, metrics, calculateDuplicateSha256DuringScan)
@@ -677,12 +965,34 @@ internal class SimilarMediaScanner(context: Context) {
         private const val DEFAULT_GROUP_LIMIT = Int.MAX_VALUE
         private const val IMAGE_COMPUTE_THREADS = 4
         private const val VIDEO_COMPUTE_THREADS = 2
+        private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS = 3_000L
+        private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_MIN_ASSETS = 100
+        private const val DEFAULT_FIRST_INTERMEDIATE_GROUP_PUBLISH_MIN_EDGES = 1
+        private const val DEFAULT_INTERMEDIATE_GROUP_PUBLISH_INTERVAL_MS = 75_000L
+        private const val DEFAULT_INTERMEDIATE_GROUP_PUBLISH_MIN_ASSETS = 10_000
+        private const val DEFAULT_INTERMEDIATE_GROUP_PUBLISH_MIN_EDGES = 20_000
+        private const val DEFAULT_MAX_INTERMEDIATE_GROUP_PUBLISH_COUNT = 3
+        private const val PROGRESS_INTERVAL_MS = 500L
+        private const val IN_BATCH_COMMIT_CHECK_ASSET_DELTA = 25
         /*
          * dHash 最终只需要 9x8 采样，colorHash 是 8x3 颜色直方图。真机 9k 图片测试中，
          * MediaStore 缩略图读取是最大耗时点，因此扫描指纹统一压到 256：既保留足够颜色/
          * 结构信息，又减少系统缩略图解码、缩放、像素遍历和 GC 压力。UI 预览仍使用 1024。
          */
         private const val DEFAULT_IMAGE_FINGERPRINT_SIZE = 256
+    }
+}
+
+private data class IntermediatePublishPolicy(
+    val intervalMs: Long,
+    val minAssets: Int,
+    val minEdges: Int,
+    val requireEdgesForAssetGate: Boolean = false
+) {
+    fun shouldPublish(assetDelta: Int, edgeDelta: Int): Boolean {
+        if (edgeDelta >= minEdges) return true
+        if (assetDelta < minAssets) return false
+        return !requireEdgesForAssetGate || edgeDelta > 0
     }
 }
 
@@ -696,6 +1006,7 @@ private data class VisualFingerprintResult(
  */
 private class PendingFingerprintJob(
     val type: FingerprintJobType,
+    val token: AssetScanToken,
     val future: Future<ComputedFingerprint>
 ) {
     /**

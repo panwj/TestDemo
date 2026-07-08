@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
 import android.database.Cursor
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import com.clean.similarscan.internal.model.MediaAsset
@@ -24,6 +25,38 @@ import java.util.Date
 class MediaStoreRepository(context: Context) {
     private val appContext = context.applicationContext
     private val resolver: ContentResolver = appContext.contentResolver
+
+    /**
+     * 轻量估算本轮扫描会访问的媒体数量。
+     *
+     * 这里只读取 Cursor.count，不构建 MediaAsset；用于进度展示和阶段性分组发布的自适应
+     * 策略。即使部分 ROM 的 count 不准确，也只影响 UI 节流，不影响扫描结果。
+     */
+    fun estimateMediaCount(
+        imageGenerationAfter: Long = 0L,
+        videoGenerationAfter: Long = 0L
+    ): Int {
+        var count = 0
+        if (SimilarScanPermissionChecker.canReadImages(appContext)) {
+            count += countMedia(
+                uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                idColumn = MediaStore.Images.Media._ID,
+                sizeColumn = MediaStore.Images.Media.SIZE,
+                generationColumn = MediaStore.Images.Media.GENERATION_MODIFIED,
+                generationAfter = imageGenerationAfter
+            )
+        }
+        if (SimilarScanPermissionChecker.canReadVideos(appContext)) {
+            count += countMedia(
+                uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                idColumn = MediaStore.Video.Media._ID,
+                sizeColumn = MediaStore.Video.Media.SIZE,
+                generationColumn = MediaStore.Video.Media.GENERATION_MODIFIED,
+                generationAfter = videoGenerationAfter
+            )
+        }
+        return count
+    }
 
     /**
      * 按批枚举当前授权范围内的图片和视频资源。
@@ -122,6 +155,25 @@ class MediaStoreRepository(context: Context) {
             onBatch(batch)
         }
         return batch.size == batchSize
+    }
+
+    private fun countMedia(
+        uri: Uri,
+        idColumn: String,
+        sizeColumn: String,
+        generationColumn: String,
+        generationAfter: Long
+    ): Int {
+        val generationSelection = generationSelection(generationColumn, generationAfter)
+        return resolver.query(
+            uri,
+            arrayOf(idColumn),
+            "$sizeColumn > 0${generationSelection.first}",
+            generationSelection.second,
+            null
+        ).useCursor { cursor ->
+            cursor.count
+        }
     }
 
     /**

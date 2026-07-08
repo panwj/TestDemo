@@ -68,9 +68,10 @@ SCREEN_RECORDING  录屏
 -> source_signature 和算法版本未变化时复用旧 fingerprint
 -> 图片/截图指纹计算提交到 imageComputeExecutor
 -> 视频/录屏指纹计算提交到 videoComputeExecutor
--> 扫描线程串行提交计算结果、更新 BK-Tree/cache、写入 Duplicate/Similar 候选组
+-> 扫描线程串行提交计算结果、更新 BK-Tree/cache、写入 Duplicate/Similar candidate edge
+-> 批次边界按节流策略阶段性 publish candidate edge 到 similar_group，供 UI 展示
 -> full scan 且完整授权时清理本轮未见资源
--> 对变化类型 rebuildSimilarGroups()
+-> 对变化类型基于 candidate edge 优先 rebuildSimilarGroups()
 -> cleanupInvalidGroups()
 -> 保存 checkpoint
 -> loadGroups() 返回结果
@@ -85,7 +86,57 @@ IMAGE_COMPUTE_THREADS = 4
 VIDEO_COMPUTE_THREADS = 2
 ```
 
-计算任务只做 Bitmap 加载、dHash/colorHash 或视频抽帧，不直接写 SQLite，不直接修改 BK-Tree。提交阶段仍由扫描线程串行执行，保证数据库、内存索引和 Similar/Duplicate 关系的更新顺序可控。`ScanMetrics` 中 `process_visual_compute`、`process_video_compute` 是各工作线程耗时累加，可能大于真实墙钟耗时；总墙钟耗时以扫描汇总行的 `elapsed` 为准。
+计算任务只做 Bitmap 加载、dHash/colorHash 或视频抽帧，不直接写 SQLite，不直接修改 BK-Tree。提交阶段仍由扫描线程串行执行，保证数据库、内存索引和 Similar/Duplicate 关系的更新顺序可控。扫描中不再逐边维护 `similar_group`，而是写入 `similar_candidate_edge`；批次边界按时间和增量阈值阶段性物化分组给 UI 展示，扫描完成后再批量构建最终分组。`ScanMetrics` 中 `process_visual_compute`、`process_video_compute` 是各工作线程耗时累加，可能大于真实墙钟耗时；总墙钟耗时以扫描汇总行的 `elapsed` 为准。
+
+阶段性分组发布默认开启，默认策略为：
+
+```text
+enableIntermediateGroupPublish = true
+firstIntermediateGroupPublishIntervalMs = 3_000
+firstIntermediateGroupPublishMinAssets = 100
+firstIntermediateGroupPublishMinEdges = 1
+intermediateGroupPublishIntervalMs = 75_000
+intermediateGroupPublishMinAssets = 10000
+intermediateGroupPublishMinEdges = 20000
+maxIntermediateGroupPublishCount = 3
+```
+
+实际发布策略会先用 MediaStore `Cursor.count` 估算本轮媒体总数，再做自适应分档。中间 publish 不是每发现一组就刷新，而是在扫描线程提交候选边后，按“时间 + 新增资源数/候选边数 + 最多次数”节流触发 `rebuildSimilarGroups()`，把当前 `similar_candidate_edge` 阶段性物化到 `similar_group`。
+
+首次 publish 规则：
+
+| 估算媒体总数 | 最小等待时间 | 新增扫描资源门槛 | 新增候选边门槛 |
+| --- | ---: | ---: | ---: |
+| `<= 500` | 1 秒 | 20 | 1 |
+| `<= 2,000` | 1.5 秒 | 40 | 1 |
+| `<= 10,000` | 2 秒 | 80 | 1 |
+| `<= 50,000` | 3 秒 | 100 | 1 |
+| `> 50,000` | 5 秒 | 200 | 1 |
+
+首次发布必须已经出现至少 1 条 Similar/Duplicate 候选边；如果当前扫描的前几百个资源互不相似，即使进度数量已经变化，也不会发布空分组。
+
+后续 publish 规则：
+
+| 估算媒体总数 | 最小间隔 | 距离上次新增资源门槛 | 距离上次新增候选边门槛 |
+| --- | ---: | ---: | ---: |
+| `<= 2,000` | 30 秒 | 500 | 1,000 |
+| `<= 10,000` | 45 秒 | 2,500 | 5,000 |
+| `<= 50,000` | 75 秒 | 10,000 | 20,000 |
+| `> 50,000` | 120 秒 | 20,000 | 40,000 |
+
+后续发布需要先满足最小时间间隔；时间满足后，新增资源数或新增候选边数满足任一门槛即可发布。
+
+单次扫描最多中间 publish 次数：
+
+| 估算媒体总数 | 最多中间 publish 次数 |
+| --- | ---: |
+| `<= 2,000` | 1 |
+| `<= 10,000` | 2 |
+| `<= 50,000` | 2 |
+| `> 50,000` | 3 |
+
+普通进度广播只更新扫描数量和耗时，只有阶段性物化成功或最终扫描完成时，进度中的 `resultUpdated=true`，UI 才刷新首页分组，避免首页预览图随进度广播反复闪烁。
+
 
 ## 3. MediaStore 枚举
 
@@ -570,9 +621,12 @@ FAST              -> 系统缩略图单帧优先，失败时 MMR 3 个时间点
 BALANCED          -> 系统缩略图 + MMR 4 个时间点，SDK 默认策略
 ACCURATE          -> MMR 7 个时间点，不把系统缩略图作为唯一依据
 REFERENCE_COMPAT -> 参考帧：不使用系统缩略图，按 0..duration 抽取 7 到 13 帧
+ADAPTIVE_BALANCED -> 先尝试系统缩略图；慢失败/低成功率时本轮跳过缩略图，直接用 BALANCED 4 帧 MMR
 ```
 
-SDK 对其他产品的默认值仍是 `BALANCED`，因为它在速度、召回和误合并之间更稳。宿主产品如需更高视频召回，可显式传入 `VideoFingerprintMode.REFERENCE_COMPAT`。
+SDK 对其他产品的默认值仍是 `BALANCED`，因为它在速度、召回和误合并之间更稳。Demo 默认使用
+`ADAPTIVE_BALANCED`，用于规避部分设备上系统视频缩略图慢失败的问题。宿主产品如需更高视频召回，
+可显式传入 `VideoFingerprintMode.REFERENCE_COMPAT`。
 
 ### 13.1 系统缩略图路径
 
@@ -1038,6 +1092,8 @@ createdAt
 ## 20. 当前风险点
 
 - 视频 `FAST` 模式仍可能退化为系统缩略图单帧，适合速度优先场景；默认 `BALANCED` 已补充 MMR 时间点。
+- `ADAPTIVE_BALANCED` 会在本轮扫描内关闭慢失败的系统缩略图路径，并通过
+  `video_thumbnail_attempt/success/fail/slow/adaptive_skipped` 计数辅助定位设备差异。
 - `REFERENCE_COMPAT` 会提高相似视频召回，但候选范围更宽、多帧比较更宽松，适合召回优先场景，不建议作为所有产品的默认模式。
 - 图片和视频指纹计算并发后，metrics 中工作线程耗时是累加值，不等同于墙钟时间；对比性能时优先看 `scan=... elapsed=...`。
 - 图片指纹输入默认是最大边 256 的缩略图，不是原图。接入方调小 `imageFingerprintSize` 会提升速度但可能影响细节召回；调大则需要接受更高解码和像素遍历成本。

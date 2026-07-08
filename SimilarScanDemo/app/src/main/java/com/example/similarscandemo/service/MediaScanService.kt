@@ -45,8 +45,17 @@ class MediaScanService : Service() {
                     scanClient.scan(
                         request = SimilarScanRequest(
                             forceFull = forceFull,
-                            videoFingerprintMode = VideoFingerprintMode.REFERENCE_COMPAT,
-                            enableMetricsLog = enableMetricsLog
+                            videoFingerprintMode = VideoFingerprintMode.ADAPTIVE_BALANCED,
+                            enableIntermediateGroupPublish = true,
+                            firstIntermediateGroupPublishIntervalMs = 3_000L,
+                            firstIntermediateGroupPublishMinAssets = 100,
+                            firstIntermediateGroupPublishMinEdges = 1,
+                            intermediateGroupPublishIntervalMs = 75_000L,
+                            intermediateGroupPublishMinAssets = 10_000,
+                            intermediateGroupPublishMinEdges = 20_000,
+                            maxIntermediateGroupPublishCount = 3,
+                            enableMetricsLog = enableMetricsLog,
+                            imageFingerprintSize = 196
                         ),
                         observer = SimilarScanObserver { progress ->
                             updateNotification(progress.message, progress.processedCount, progress.elapsedTimeText)
@@ -56,7 +65,8 @@ class MediaScanService : Service() {
                                 progress.discoveredGroupCount,
                                 progress.message,
                                 progress.elapsedTimeMs,
-                                progress.elapsedTimeText
+                                progress.elapsedTimeText,
+                                progress.resultUpdated
                             )
                         }
                     )
@@ -67,7 +77,8 @@ class MediaScanService : Service() {
                         result.groups.size,
                         result.message,
                         result.elapsedTimeMs,
-                        result.elapsedTimeText
+                        result.elapsedTimeText,
+                        true
                     )
                 }.onFailure { error ->
                     sendProgress(
@@ -76,7 +87,8 @@ class MediaScanService : Service() {
                         0,
                         error.message ?: "Media scan failed.",
                         0L,
-                        ""
+                        "",
+                        false
                     )
                 }
             } finally {
@@ -110,7 +122,8 @@ class MediaScanService : Service() {
         groupCount: Int,
         message: String,
         elapsedTimeMs: Long,
-        elapsedTimeText: String
+        elapsedTimeText: String,
+        resultUpdated: Boolean
     ) {
         sendBroadcast(
             Intent(action)
@@ -120,6 +133,7 @@ class MediaScanService : Service() {
                 .putExtra(EXTRA_MESSAGE, message)
                 .putExtra(EXTRA_ELAPSED_TIME_MS, elapsedTimeMs)
                 .putExtra(EXTRA_ELAPSED_TIME_TEXT, elapsedTimeText)
+                .putExtra(EXTRA_RESULT_UPDATED, resultUpdated)
         )
     }
 
@@ -185,6 +199,7 @@ class MediaScanService : Service() {
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_ELAPSED_TIME_MS = "elapsed_time_ms"
         const val EXTRA_ELAPSED_TIME_TEXT = "elapsed_time_text"
+        const val EXTRA_RESULT_UPDATED = "result_updated"
         @Volatile
         var isRunning: Boolean = false
             private set

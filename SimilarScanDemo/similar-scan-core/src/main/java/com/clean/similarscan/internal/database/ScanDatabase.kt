@@ -25,6 +25,7 @@ import com.clean.similarscan.internal.similarity.Threshold
 import com.clean.similarscan.internal.similarity.VideoFingerprint
 import com.clean.similarscan.internal.similarity.VideoFingerprintMode
 import com.clean.similarscan.internal.similarity.VideoFingerprintSource
+import com.clean.similarscan.internal.scanner.ScanMetrics
 import com.clean.similarscan.internal.util.FormatUtils
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -32,7 +33,7 @@ import java.util.Locale
 
 private const val DB_NAME = "similar_scan.db"
 // 数据库结构和指纹算法缓存版本同步演进；版本变化会让旧扫描缓存按新规则重新生成。
-private const val DB_VERSION = 28
+private const val DB_VERSION = 29
 
 /**
  * Room 数据库承载扫描库连接。
@@ -157,12 +158,44 @@ internal data class SimilarGroupItemEntity(
     @ColumnInfo(name = "asset_id") val assetId: Long
 )
 
+@Entity(
+    tableName = "similar_candidate_edge",
+    primaryKeys = ["category", "type", "first_asset_id", "second_asset_id"],
+    foreignKeys = [
+        ForeignKey(
+            entity = MediaAssetEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["first_asset_id"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = MediaAssetEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["second_asset_id"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index(value = ["category", "type"], name = "idx_edge_category_type"),
+        Index(value = ["first_asset_id"], name = "idx_edge_first_asset"),
+        Index(value = ["second_asset_id"], name = "idx_edge_second_asset")
+    ]
+)
+internal data class SimilarCandidateEdgeEntity(
+    val category: String,
+    val type: String,
+    @ColumnInfo(name = "first_asset_id") val firstAssetId: Long,
+    @ColumnInfo(name = "second_asset_id") val secondAssetId: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
+)
+
 @Database(
     entities = [
         MediaAssetEntity::class,
         FingerprintEntity::class,
         SimilarGroupEntity::class,
-        SimilarGroupItemEntity::class
+        SimilarGroupItemEntity::class,
+        SimilarCandidateEdgeEntity::class
     ],
     version = DB_VERSION,
     exportSchema = false
@@ -313,6 +346,7 @@ internal class ScanDatabase(context: Context) {
         val db = writableDatabase
         db.beginTransaction()
         try {
+            db.delete("similar_candidate_edge", null, null)
             db.delete("similar_group_item", null, null)
             db.delete("similar_group", null, null)
             db.delete("fingerprint", null, null)
@@ -502,14 +536,10 @@ internal class ScanDatabase(context: Context) {
         db.beginTransaction()
         try {
             if (!isTokenActive(db, token)) return false
-            db.delete("similar_group_item", "asset_id=?", arrayOf(token.assetId.toString()))
-            db.execSQL(
-                """
-                DELETE FROM similar_group
-                WHERE id NOT IN (
-                    SELECT DISTINCT group_id FROM similar_group_item
-                )
-                """.trimIndent()
+            db.delete(
+                "similar_candidate_edge",
+                "first_asset_id=? OR second_asset_id=?",
+                arrayOf(token.assetId.toString(), token.assetId.toString())
             )
             db.setTransactionSuccessful()
             return true
@@ -560,7 +590,9 @@ internal class ScanDatabase(context: Context) {
     fun rebuildSimilarGroups(
         kinds: Set<MediaKind>,
         imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
-        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED,
+        metrics: ScanMetrics? = null,
+        finalPass: Boolean = true
     ) {
         val supportedKinds = kinds.filterTo(linkedSetOf()) {
             it == MediaKind.PHOTO ||
@@ -591,20 +623,100 @@ internal class ScanDatabase(context: Context) {
                  *
                  * 如果是旧数据、异常中断或首次进入时没有可复用候选，则回退到原 BK-Tree
                  * 召回路径，保证结果不会因为候选表缺失而被清空。
-                 */
+                */
                 val groupingFamily = groupingKindsForFinalRebuild(kind)
-                val reusableCandidateMap = loadExistingSimilarCandidateMap(db, groupingFamily)
-                deleteSimilarGroups(db, kind)
-                val records = loadGroupingFingerprints(db, kind, groupingFamily, imageFingerprintSize, videoFingerprintMode)
+                val duplicateCandidateMap = if (!isVideoLikeKind(kind)) {
+                    metrics.measureOrRun("rebuild_load_duplicate_edges") {
+                        loadCandidateEdgeMap(db, GroupCategory.DUPLICATE, groupingFamily)
+                    }
+                } else {
+                    emptyMap()
+                }
+                metrics.addEdgeMapCount("rebuild_duplicate_edges", duplicateCandidateMap)
+                if (!isVideoLikeKind(kind)) {
+                    if (finalPass || duplicateCandidateMap.isNotEmpty()) {
+                        metrics.measureOrRun("rebuild_delete_duplicate_groups") {
+                            deleteGroups(db, GroupCategory.DUPLICATE, kind)
+                        }
+                        if (duplicateCandidateMap.isNotEmpty()) {
+                            val duplicateRecords = metrics.measureOrRun("rebuild_load_duplicate_fingerprints") {
+                                loadGroupingFingerprints(
+                                    db,
+                                    kind,
+                                    groupingFamily,
+                                    imageFingerprintSize,
+                                    videoFingerprintMode,
+                                    excludeDuplicateGroups = false
+                                )
+                            }
+                            metrics.measureOrRun("rebuild_build_duplicate_groups") {
+                                buildGroupsFromCandidateMap(
+                                    db,
+                                    GroupCategory.DUPLICATE,
+                                    kind,
+                                    duplicateRecords,
+                                    duplicateCandidateMap
+                                )
+                            }
+                        }
+                    }
+                }
+                val edgeCandidateMap = metrics.measureOrRun("rebuild_load_similar_edges") {
+                    loadCandidateEdgeMap(db, GroupCategory.SIMILAR, groupingFamily)
+                }
+                metrics.addEdgeMapCount("rebuild_similar_edges", edgeCandidateMap)
+                val reusableCandidateMap = if (edgeCandidateMap.isEmpty()) {
+                    metrics.measureOrRun("rebuild_load_existing_similar_groups") {
+                        loadExistingSimilarCandidateMap(db, groupingFamily)
+                    }
+                } else {
+                    edgeCandidateMap
+                }
+                val shouldTrustCandidateEdges = edgeCandidateMap.isNotEmpty()
+                metrics.measureOrRun("rebuild_delete_similar_groups") {
+                    deleteSimilarGroups(db, kind)
+                }
+                val duplicateExcludedAssetIds = duplicateCandidateMap.keys
+                metrics?.addCount("rebuild_duplicate_excluded_assets", duplicateExcludedAssetIds.size)
+                val records = metrics.measureOrRun("rebuild_load_similar_fingerprints") {
+                    if (duplicateExcludedAssetIds.isNotEmpty()) {
+                        loadGroupingFingerprints(
+                            db,
+                            kind,
+                            groupingFamily,
+                            imageFingerprintSize,
+                            videoFingerprintMode,
+                            excludeDuplicateGroups = false,
+                            excludedAssetIds = duplicateExcludedAssetIds
+                        )
+                    } else {
+                        loadGroupingFingerprints(db, kind, groupingFamily, imageFingerprintSize, videoFingerprintMode)
+                    }
+                }
                 if (records.size < 2) return@kindLoop
+
+                if (shouldTrustCandidateEdges) {
+                    metrics.measureOrRun("rebuild_build_similar_groups_from_edges") {
+                        buildGroupsFromCandidateMap(
+                            db,
+                            GroupCategory.SIMILAR,
+                            kind,
+                            records,
+                            reusableCandidateMap
+                        )
+                    }
+                    return@kindLoop
+                }
 
                 val recordsById = records.associateBy(GroupingFingerprint::assetId)
                 val remainingIds = records.mapTo(linkedSetOf(), GroupingFingerprint::assetId)
                 val index = if (reusableCandidateMap.isEmpty()) {
-                    HammingBkTree().also { tree ->
-                        records.forEach { record ->
-                            record.indexHashes.forEach { imageHash ->
-                                tree.add(record.assetId, imageHash)
+                    metrics.measureOrRun("rebuild_fallback_build_bk_tree") {
+                        HammingBkTree().also { tree ->
+                            records.forEach { record ->
+                                record.indexHashes.forEach { imageHash ->
+                                    tree.add(record.assetId, imageHash)
+                                }
                             }
                         }
                     }
@@ -616,52 +728,54 @@ internal class ScanDatabase(context: Context) {
                 )
 
                 try {
-                    records.forEach anchorLoop@{ anchor ->
-                        // 已被更早锚点收进分组的资源不再作为新锚点。
-                        if (!remainingIds.remove(anchor.assetId)) return@anchorLoop
+                    metrics.measureOrRun("rebuild_fallback_build_similar_groups") {
+                        records.forEach anchorLoop@{ anchor ->
+                            // 已被更早锚点收进分组的资源不再作为新锚点。
+                            if (!remainingIds.remove(anchor.assetId)) return@anchorLoop
 
-                        val matchedIds = if (index == null) {
-                            reusableCandidateMap[anchor.assetId]
-                                .orEmpty()
-                                .asSequence()
-                        } else {
-                            anchor.indexHashes
-                                .asSequence()
-                                .flatMap { imageHash ->
-                                    index.query(
-                                        imageHash,
-                                        Threshold.maxCandidateDistance(kind)
-                                    ).asSequence()
-                                }
-                                .distinct()
-                        }
-                            .filter(remainingIds::contains)
-                            .filter { candidateId ->
-                                val candidate = recordsById[candidateId] ?: return@filter false
-                                if (isVideoLikeKind(kind)) {
-                                    val anchorVideo = anchor.videoFingerprint ?: return@filter false
-                                    val candidateVideo = candidate.videoFingerprint ?: return@filter false
-                                    anchorVideo.isSimilarTo(candidateVideo, videoCompareKind(anchor.kind, candidate.kind))
-                                } else {
-                                    anchor.hash.isSimilarTo(candidate.hash, kind)
-                                }
+                            val matchedIds = if (index == null) {
+                                reusableCandidateMap[anchor.assetId]
+                                    .orEmpty()
+                                    .asSequence()
+                            } else {
+                                anchor.indexHashes
+                                    .asSequence()
+                                    .flatMap { imageHash ->
+                                        index.query(
+                                            imageHash,
+                                            Threshold.maxCandidateDistance(kind)
+                                        ).asSequence()
+                                    }
+                                    .distinct()
                             }
-                            .toList()
+                                .filter(remainingIds::contains)
+                                .filter { candidateId ->
+                                    val candidate = recordsById[candidateId] ?: return@filter false
+                                    if (isVideoLikeKind(kind)) {
+                                        val anchorVideo = anchor.videoFingerprint ?: return@filter false
+                                        val candidateVideo = candidate.videoFingerprint ?: return@filter false
+                                        anchorVideo.isSimilarTo(candidateVideo, videoCompareKind(anchor.kind, candidate.kind))
+                                    } else {
+                                        anchor.hash.isSimilarTo(candidate.hash, kind)
+                                    }
+                                }
+                                .toList()
 
-                        if (matchedIds.isEmpty()) return@anchorLoop
-                        val groupId = db.insert(
-                            "similar_group",
-                            null,
-                            ContentValues().apply {
-                                put("category", GroupCategory.SIMILAR.name)
-                                put("type", kind.name)
-                                put("updated_at", System.currentTimeMillis())
+                            if (matchedIds.isEmpty()) return@anchorLoop
+                            val groupId = db.insert(
+                                "similar_group",
+                                null,
+                                ContentValues().apply {
+                                    put("category", GroupCategory.SIMILAR.name)
+                                    put("type", kind.name)
+                                    put("updated_at", System.currentTimeMillis())
+                                }
+                            )
+                            insertGroupItem(insertGroupItemStatement, groupId, anchor.assetId)
+                            matchedIds.forEach { assetId ->
+                                insertGroupItem(insertGroupItemStatement, groupId, assetId)
+                                remainingIds.remove(assetId)
                             }
-                        )
-                        insertGroupItem(insertGroupItemStatement, groupId, anchor.assetId)
-                        matchedIds.forEach { assetId ->
-                            insertGroupItem(insertGroupItemStatement, groupId, assetId)
-                            remainingIds.remove(assetId)
                         }
                     }
                 } finally {
@@ -721,7 +835,85 @@ internal class ScanDatabase(context: Context) {
         return candidates
     }
 
+    private fun loadCandidateEdgeMap(
+        db: SqlDb,
+        category: GroupCategory,
+        kinds: Set<MediaKind>
+    ): Map<Long, Set<Long>> {
+        val kindNames = kinds.map(MediaKind::name)
+        val placeholders = kindNames.joinToString(",") { "?" }
+        val candidates = mutableMapOf<Long, MutableSet<Long>>()
+        db.rawQuery(
+            """
+            SELECT e.first_asset_id, e.second_asset_id
+            FROM similar_candidate_edge e
+            JOIN media_asset first_asset ON first_asset.id = e.first_asset_id
+            JOIN media_asset second_asset ON second_asset.id = e.second_asset_id
+            WHERE e.category = ?
+              AND e.type IN ($placeholders)
+              AND first_asset.state = 'ACTIVE'
+              AND second_asset.state = 'ACTIVE'
+            """.trimIndent(),
+            (listOf(category.name) + kindNames).toTypedArray()
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val firstId = cursor.getLong(0)
+                val secondId = cursor.getLong(1)
+                candidates.getOrPut(firstId) { linkedSetOf() } += secondId
+                candidates.getOrPut(secondId) { linkedSetOf() } += firstId
+            }
+        }
+        return candidates
+    }
+
+    private fun buildGroupsFromCandidateMap(
+        db: SqlDb,
+        category: GroupCategory,
+        kind: MediaKind,
+        records: List<GroupingFingerprint>,
+        candidateMap: Map<Long, Set<Long>>
+    ) {
+        if (records.size < 2 || candidateMap.isEmpty()) return
+        val recordsById = records.associateBy(GroupingFingerprint::assetId)
+        val remainingIds = records.mapTo(linkedSetOf(), GroupingFingerprint::assetId)
+        val insertGroupItemStatement = db.compileStatement(
+            "INSERT OR IGNORE INTO similar_group_item(group_id, asset_id) VALUES(?, ?)"
+        )
+        try {
+            records.forEach anchorLoop@{ anchor ->
+                if (!remainingIds.remove(anchor.assetId)) return@anchorLoop
+                val matchedIds = candidateMap[anchor.assetId]
+                    .orEmpty()
+                    .asSequence()
+                    .filter(remainingIds::contains)
+                    .filter(recordsById::containsKey)
+                    .toList()
+                if (matchedIds.isEmpty()) return@anchorLoop
+                val groupId = db.insert(
+                    "similar_group",
+                    null,
+                    ContentValues().apply {
+                        put("category", category.name)
+                        put("type", kind.name)
+                        put("updated_at", System.currentTimeMillis())
+                    }
+                )
+                insertGroupItem(insertGroupItemStatement, groupId, anchor.assetId)
+                matchedIds.forEach { assetId ->
+                    insertGroupItem(insertGroupItemStatement, groupId, assetId)
+                    remainingIds.remove(assetId)
+                }
+            }
+        } finally {
+            insertGroupItemStatement.close()
+        }
+    }
+
     private fun deleteSimilarGroups(db: SqlDb, kind: MediaKind) {
+        deleteGroups(db, GroupCategory.SIMILAR, kind)
+    }
+
+    private fun deleteGroups(db: SqlDb, category: GroupCategory, kind: MediaKind) {
         val kindNames = groupingKindsForFinalRebuild(kind).map(MediaKind::name)
         val placeholders = kindNames.joinToString(",") { "?" }
         db.execSQL(
@@ -731,12 +923,12 @@ internal class ScanDatabase(context: Context) {
                 SELECT id FROM similar_group WHERE category=? AND type IN ($placeholders)
             )
             """.trimIndent(),
-            (listOf(GroupCategory.SIMILAR.name) + kindNames).toTypedArray()
+            (listOf(category.name) + kindNames).toTypedArray()
         )
         db.delete(
             "similar_group",
             "category=? AND type IN ($placeholders)",
-            (listOf(GroupCategory.SIMILAR.name) + kindNames).toTypedArray()
+            (listOf(category.name) + kindNames).toTypedArray()
         )
     }
 
@@ -745,7 +937,9 @@ internal class ScanDatabase(context: Context) {
         kind: MediaKind,
         kinds: Set<MediaKind> = setOf(kind),
         imageFingerprintSize: Int = DEFAULT_IMAGE_FINGERPRINT_SIZE,
-        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED
+        videoFingerprintMode: VideoFingerprintMode = VideoFingerprintMode.BALANCED,
+        excludeDuplicateGroups: Boolean = true,
+        excludedAssetIds: Set<Long> = emptySet()
     ): List<GroupingFingerprint> {
         /*
          * 视频专用流程直接使用 MediaStore date_added DESC 的输入顺序作为锚点顺序，
@@ -758,6 +952,31 @@ internal class ScanDatabase(context: Context) {
         }
         val kindNames = kinds.map(MediaKind::name)
         val kindPlaceholders = kindNames.joinToString(",") { "?" }
+        val duplicateExclusionSql = if (excludeDuplicateGroups) {
+            """
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM similar_group_item duplicate_item
+                  JOIN similar_group duplicate_group
+                    ON duplicate_group.id=duplicate_item.group_id
+                  WHERE duplicate_item.asset_id=a.id
+                    AND duplicate_group.category=?
+                    AND duplicate_group.type IN ($kindPlaceholders)
+              )
+            """.trimIndent()
+        } else {
+            ""
+        }
+        val args = if (excludeDuplicateGroups) {
+            kindNames + listOf(
+                fingerprintAlgorithmVersion(kind, imageFingerprintSize, videoFingerprintMode).toString(),
+                GroupCategory.DUPLICATE.name
+            ) + kindNames
+        } else {
+            kindNames + listOf(
+                fingerprintAlgorithmVersion(kind, imageFingerprintSize, videoFingerprintMode).toString()
+            )
+        }
         return db.rawQuery(
             """
             SELECT a.id, a.type, f.image_hash, f.color_hash,
@@ -768,26 +987,15 @@ internal class ScanDatabase(context: Context) {
               AND a.state='ACTIVE'
               AND a.fingerprint_status='DONE'
               AND a.fingerprint_algorithm_version=?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM similar_group_item duplicate_item
-                  JOIN similar_group duplicate_group
-                    ON duplicate_group.id=duplicate_item.group_id
-                  WHERE duplicate_item.asset_id=a.id
-                    AND duplicate_group.category=?
-                    AND duplicate_group.type IN ($kindPlaceholders)
-              )
+              $duplicateExclusionSql
             ORDER BY $orderBy
             """.trimIndent(),
-            (
-                kindNames + listOf(
-                fingerprintAlgorithmVersion(kind, imageFingerprintSize, videoFingerprintMode).toString(),
-                GroupCategory.DUPLICATE.name
-                ) + kindNames
-                ).toTypedArray()
+            args.toTypedArray()
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
+                    val assetId = cursor.getLong(0)
+                    if (assetId in excludedAssetIds) continue
                     val videoFingerprint =
                         if (cursor.isNull(4) || cursor.isNull(5)) {
                             null
@@ -800,7 +1008,7 @@ internal class ScanDatabase(context: Context) {
                         }
                     add(
                         GroupingFingerprint(
-                            assetId = cursor.getLong(0),
+                            assetId = assetId,
                             kind = MediaKind.valueOf(cursor.getString(1)),
                             hash = CombinedHash(
                                 imageHash = cursor.getLong(2),
@@ -819,17 +1027,28 @@ internal class ScanDatabase(context: Context) {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            val placeholders = uris.joinToString(",") { "?" }
-            val args = uris.toTypedArray()
-            db.execSQL(
-                "DELETE FROM similar_group_item WHERE asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))",
-                args
-            )
-            db.execSQL(
-                "DELETE FROM fingerprint WHERE asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))",
-                args
-            )
-            db.delete("media_asset", "uri IN ($placeholders)", args)
+            uris.chunked(URI_QUERY_CHUNK_SIZE).forEach { chunk ->
+                val placeholders = chunk.joinToString(",") { "?" }
+                val args = chunk.toTypedArray()
+                val edgeArgs = arrayOf(*args, *args)
+                db.execSQL(
+                    """
+                    DELETE FROM similar_candidate_edge
+                    WHERE first_asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))
+                       OR second_asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))
+                    """.trimIndent(),
+                    edgeArgs
+                )
+                db.execSQL(
+                    "DELETE FROM similar_group_item WHERE asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))",
+                    args
+                )
+                db.execSQL(
+                    "DELETE FROM fingerprint WHERE asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))",
+                    args
+                )
+                db.delete("media_asset", "uri IN ($placeholders)", args)
+            }
             db.execSQL(
                 "DELETE FROM similar_group WHERE id NOT IN (SELECT DISTINCT group_id FROM similar_group_item)"
             )
@@ -846,31 +1065,35 @@ internal class ScanDatabase(context: Context) {
      */
     fun markDeletePending(uris: Collection<String>): Set<String> {
         if (uris.isEmpty()) return emptySet()
-        val placeholders = uris.joinToString(",") { "?" }
-        val args = uris.toTypedArray()
         val db = writableDatabase
         db.beginTransaction()
         return try {
-            val existing = db.rawQuery(
-                "SELECT uri FROM media_asset WHERE uri IN ($placeholders) AND state='ACTIVE'",
-                args
-            ).use { cursor ->
-                buildSet {
-                    while (cursor.moveToNext()) add(cursor.getString(0))
+            val existing = linkedSetOf<String>()
+            uris.chunked(URI_QUERY_CHUNK_SIZE).forEach { chunk ->
+                val placeholders = chunk.joinToString(",") { "?" }
+                val args = chunk.toTypedArray()
+                db.rawQuery(
+                    "SELECT uri FROM media_asset WHERE uri IN ($placeholders) AND state='ACTIVE'",
+                    args
+                ).use { cursor ->
+                    while (cursor.moveToNext()) existing += cursor.getString(0)
                 }
             }
             if (existing.isNotEmpty()) {
-                val activePlaceholders = existing.joinToString(",") { "?" }
-                db.execSQL(
-                    """
-                    UPDATE media_asset
-                    SET state='DELETE_PENDING',
-                        state_changed_at=?,
-                        revision=revision+1
-                    WHERE uri IN ($activePlaceholders) AND state='ACTIVE'
-                    """.trimIndent(),
-                    arrayOf(System.currentTimeMillis(), *existing.toTypedArray())
-                )
+                val now = System.currentTimeMillis()
+                existing.chunked(URI_QUERY_CHUNK_SIZE).forEach { chunk ->
+                    val activePlaceholders = chunk.joinToString(",") { "?" }
+                    db.execSQL(
+                        """
+                        UPDATE media_asset
+                        SET state='DELETE_PENDING',
+                            state_changed_at=?,
+                            revision=revision+1
+                        WHERE uri IN ($activePlaceholders) AND state='ACTIVE'
+                        """.trimIndent(),
+                        arrayOf(now, *chunk.toTypedArray())
+                    )
+                }
             }
             db.setTransactionSuccessful()
             existing
@@ -884,18 +1107,28 @@ internal class ScanDatabase(context: Context) {
      */
     fun restoreDeletePending(uris: Collection<String>) {
         if (uris.isEmpty()) return
-        val placeholders = uris.joinToString(",") { "?" }
-        writableDatabase.execSQL(
-            """
-            UPDATE media_asset
-            SET state='ACTIVE',
-                state_changed_at=?,
-                revision=revision+1,
-                fingerprint_status='PENDING'
-            WHERE uri IN ($placeholders) AND state='DELETE_PENDING'
-            """.trimIndent(),
-            arrayOf(System.currentTimeMillis(), *uris.toTypedArray())
-        )
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            uris.chunked(URI_QUERY_CHUNK_SIZE).forEach { chunk ->
+                val placeholders = chunk.joinToString(",") { "?" }
+                db.execSQL(
+                    """
+                    UPDATE media_asset
+                    SET state='ACTIVE',
+                        state_changed_at=?,
+                        revision=revision+1,
+                        fingerprint_status='PENDING'
+                    WHERE uri IN ($placeholders) AND state='DELETE_PENDING'
+                    """.trimIndent(),
+                    arrayOf(now, *chunk.toTypedArray())
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     /**
@@ -926,12 +1159,24 @@ internal class ScanDatabase(context: Context) {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            val placeholders = uris.joinToString(",") { "?" }
-            db.delete(
-                "media_asset",
-                "uri IN ($placeholders) AND state='DELETE_PENDING'",
-                uris.toTypedArray()
-            )
+            uris.chunked(URI_QUERY_CHUNK_SIZE).forEach { chunk ->
+                val placeholders = chunk.joinToString(",") { "?" }
+                val args = chunk.toTypedArray()
+                val edgeArgs = arrayOf(*args, *args)
+                db.execSQL(
+                    """
+                    DELETE FROM similar_candidate_edge
+                    WHERE first_asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))
+                       OR second_asset_id IN (SELECT id FROM media_asset WHERE uri IN ($placeholders))
+                    """.trimIndent(),
+                    edgeArgs
+                )
+                db.delete(
+                    "media_asset",
+                    "uri IN ($placeholders) AND state='DELETE_PENDING'",
+                    args
+                )
+            }
             db.execSQL(
                 "DELETE FROM similar_group WHERE id NOT IN " +
                     "(SELECT DISTINCT group_id FROM similar_group_item)"
@@ -956,6 +1201,13 @@ internal class ScanDatabase(context: Context) {
             val staleSelection =
                 "state != 'DELETE_PENDING' AND (last_seen_scan IS NULL OR last_seen_scan != ?)"
             val args = arrayOf(scanToken)
+            db.execSQL(
+                "DELETE FROM similar_candidate_edge WHERE first_asset_id IN " +
+                    "(SELECT id FROM media_asset WHERE $staleSelection) " +
+                    "OR second_asset_id IN " +
+                    "(SELECT id FROM media_asset WHERE $staleSelection)",
+                arrayOf(scanToken, scanToken)
+            )
             db.execSQL(
                 "DELETE FROM similar_group_item WHERE asset_id IN " +
                     "(SELECT id FROM media_asset WHERE $staleSelection)",
@@ -1222,11 +1474,56 @@ internal class ScanDatabase(context: Context) {
     }
 
     fun linkDuplicateAssets(type: MediaKind, firstAssetId: Long, secondAssetId: Long) {
-        linkAssets(GroupCategory.DUPLICATE, type, firstAssetId, secondAssetId)
+        recordCandidateEdges(GroupCategory.DUPLICATE, type, firstAssetId, listOf(secondAssetId))
     }
 
     fun linkSimilarAssets(type: MediaKind, firstAssetId: Long, secondAssetId: Long) {
-        linkAssets(GroupCategory.SIMILAR, type, firstAssetId, secondAssetId)
+        recordCandidateEdges(GroupCategory.SIMILAR, type, firstAssetId, listOf(secondAssetId))
+    }
+
+    fun linkDuplicateAssets(type: MediaKind, firstAssetId: Long, secondAssetIds: Collection<Long>) {
+        recordCandidateEdges(GroupCategory.DUPLICATE, type, firstAssetId, secondAssetIds)
+    }
+
+    fun linkSimilarAssets(type: MediaKind, firstAssetId: Long, secondAssetIds: Collection<Long>) {
+        recordCandidateEdges(GroupCategory.SIMILAR, type, firstAssetId, secondAssetIds)
+    }
+
+    private fun recordCandidateEdges(
+        category: GroupCategory,
+        type: MediaKind,
+        firstAssetId: Long,
+        secondAssetIds: Collection<Long>
+    ) {
+        val filteredIds = secondAssetIds.asSequence().filter { it != firstAssetId }.distinct().toList()
+        if (filteredIds.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        val statement = db.compileStatement(
+            """
+            INSERT OR REPLACE INTO similar_candidate_edge(
+                category, type, first_asset_id, second_asset_id, updated_at
+            ) VALUES(?, ?, ?, ?, ?)
+            """.trimIndent()
+        )
+        try {
+            val now = System.currentTimeMillis()
+            filteredIds.forEach { secondAssetId ->
+                val first = minOf(firstAssetId, secondAssetId)
+                val second = maxOf(firstAssetId, secondAssetId)
+                statement.clearBindings()
+                statement.bindString(1, category.name)
+                statement.bindString(2, type.name)
+                statement.bindLong(3, first)
+                statement.bindLong(4, second)
+                statement.bindLong(5, now)
+                statement.executeInsert()
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            statement.close()
+            db.endTransaction()
+        }
     }
 
     private fun linkAssets(category: GroupCategory, type: MediaKind, firstAssetId: Long, secondAssetId: Long) {
@@ -2006,6 +2303,7 @@ internal class ScanDatabase(context: Context) {
          */
         private const val CANDIDATE_ID_CHUNK_SIZE = 800
         private const val ASSET_QUERY_PAGE_SIZE = 500
+        private const val URI_QUERY_CHUNK_SIZE = 400
         private const val FINGERPRINT_ALGORITHM_VERSION = 28
         private const val DEFAULT_IMAGE_FINGERPRINT_SIZE = 256
         private const val VIDEO_ASPECT_BUCKET_TOLERANCE = 8
@@ -2097,6 +2395,16 @@ private data class GroupingFingerprint(
             ?.filter(CombinedHash::isValid)
             ?.map(CombinedHash::imageHash)
             ?: listOf(hash.imageHash)
+}
+
+private fun <T> ScanMetrics?.measureOrRun(name: String, block: () -> T): T {
+    return if (this == null) block() else measure(name, block)
+}
+
+private fun ScanMetrics?.addEdgeMapCount(name: String, edgeMap: Map<Long, Set<Long>>) {
+    this ?: return
+    val edgeCount = edgeMap.values.sumOf(Set<Long>::size) / 2
+    addCount(name, edgeCount)
 }
 
 /**

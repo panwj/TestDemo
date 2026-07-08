@@ -74,6 +74,7 @@ class MainActivity : Activity() {
             val groups = event.getIntExtra(MediaScanService.EXTRA_GROUP_COUNT, 0)
             val message = event.getStringExtra(MediaScanService.EXTRA_MESSAGE).orEmpty()
             val elapsedTimeText = event.getStringExtra(MediaScanService.EXTRA_ELAPSED_TIME_TEXT).orEmpty()
+            val resultUpdated = event.getBooleanExtra(MediaScanService.EXTRA_RESULT_UPDATED, false)
             when (event.action) {
                 MediaScanService.ACTION_PROGRESS -> {
                     isScanning = true
@@ -82,7 +83,9 @@ class MainActivity : Activity() {
                         prefix = "Scanning $processed media · $groups groups",
                         elapsedTimeText = elapsedTimeText
                     )
-                    scheduleThrottledRender()
+                    if (resultUpdated) {
+                        scheduleThrottledRender()
+                    }
                 }
                 MediaScanService.ACTION_COMPLETE -> finishScanUi(
                     buildScanSummary(
